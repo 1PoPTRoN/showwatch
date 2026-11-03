@@ -10,9 +10,8 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 ## Cross-cutting
 
 - **X1. Test time bombs.** The example dates (2026-12-18/19) are only six weeks away. Any test that validates
-  dates against the real clock will start failing after 2026-12-19. → Config validation receives
-  `now` from the injected `Clock` (pydantic validation context). Tests pin `FakeClock` to
-  2026-11-03T03:30Z (09:00 IST). `proposed`
+  dates against the real clock will start failing after 2026-12-19. → `parse_settings` takes the
+  injected `Clock`. Tests pin `FakeClock` to 2026-11-03T03:30Z (09:00 IST). `done` (Phase 1)
 - **X2. Virtual time with several tasks.** "`sleep` advances time" is exact only when there is one sleeper.
   If two tasks sleep, the times add up instead of overlapping. → A single scheduler task owns all polling.
   That makes single-flight (T4.11) true by construction, and a global gate gives the 20 s spacing (T4.10).
@@ -33,14 +32,30 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 ## Phase 1 — config
 
 - **P1.1** Apply the 60 s floor to `base_interval_s` too, not only to `hot_interval_s`, and require
-  hot ≤ base. `proposed`
-- **P1.2** Hot windows that cross midnight (start ≥ end): reject in v1, the same as `showtime_window` (T1.3). `proposed`
-- **P1.3** "Date before now" is judged on the calendar date in the config timezone. Today is allowed. `proposed`
-- **P1.4** Reject any secret-looking key (`*token*`, `*secret*`, `*password*`, `*api_key*`), not just
-  `telegram_token`, with a message pointing to `.env`. `proposed`
-- **P1.5** Compare language and format case-insensitively and whitespace-normalised, so "hindi" matches
-  "Hindi" and "IMAX  2D" matches "IMAX 2D". Upper-case row labels. `proposed`
-- **P1.6** A row in both `preferred_rows` and `avoid_rows` is contradictory → reject. `proposed`
+  hot ≤ base. `done`
+- **P1.2** Hot windows that cross midnight (start ≥ end): reject in v1, the same as `showtime_window` (T1.3). `done`
+- **P1.3** "Date before now" is judged on the calendar date in the config timezone. Today is allowed. `done`
+- **P1.4** Reject any secret-looking key (`*token*`, `*secret*`, `*password*`, `*api_key*`, `*chat_id*`, and
+  so on), not just `telegram_token`, with a message naming the `.env` variable. Error messages never
+  echo input values, and the pydantic error chain (whose text includes inputs) is suppressed. `done`
+- **P1.5** `normalize_label()` compares language, format and venue ignoring case and spacing. In Phase 1
+  it is used for duplicate detection; Phase 2's matcher uses it for matching. Row labels are
+  upper-cased. `done` (config side)
+- **P1.6** A row in both `preferred_rows` and `avoid_rows` is contradictory → reject. `done`
+- **P1.7 YAML and pydantic traps that would corrupt values silently** (found by probing, all now
+  refused with a hint): an unquoted `18:00` is the integer 1080, which pydantic turns into
+  **00:18 UTC**; duplicate keys keep the last value; `yes`/`true` count as `1` for plain ints and
+  for `Literal[1]`; `ON` becomes `True`; an integer date becomes a Unix timestamp. Numeric titles
+  (`movie: 1917`) are kept as text, but `007` reaches us as 7, so the example file says to quote such
+  titles. `done`
+- **P1.8 The past-date rule is for user input only.** A target added on Nov 3 for Nov 5 is reloaded
+  from the store after a restart on Nov 6. A model-level date check would then crash on startup.
+  `Target` itself therefore accepts past dates, and `parse_settings` checks them on the way in
+  (see P8.2 for runtime expiry). `done`
+- **P1.9** The C4/C5 numbers live only in `limits.py`, pinned by `test_limits.py`, so config validation
+  and the Phase 4 limiter cannot drift apart. `done`
+- **P1.10 To revisit in Phase 8:** `showwatch add` must enforce "at most 3 targets" across the whole
+  store, not only within one file. `proposed`
 
 ## Phase 2 — matcher
 

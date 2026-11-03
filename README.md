@@ -4,8 +4,8 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 0 of 10).** The project skeleton and test harness are in place.
-> Nothing talks to any website yet, and the CLI commands are placeholders.
+> **Status: early development (Phase 1 of 10 done).** The config file format and its validation are
+> in place. Nothing talks to any website yet, and the CLI commands are placeholders.
 
 ## Why
 
@@ -23,9 +23,28 @@ Each watched movie (a *target*) runs in one of three modes. They are also the or
 | `dry-run` | It opens the seat map, works out the best seats and saves a screenshot with them highlighted. It clicks nothing. |
 | `assist` | It selects the seats and stops at the order summary, where they are held, then alerts you with the countdown. You pay yourself. |
 
+## The targets file
+
 You describe what you want in a small YAML file: city, language, formats in order of preference
 (e.g. IMAX 2D, then 4DX, then 2D), cinemas, dates, a showtime window, the number of seats, preferred
-and avoided rows, and a maximum price. See [docs/SPEC.md §8](docs/SPEC.md#8-configuration-targetsyaml).
+and avoided rows, and a maximum price. Start from
+[examples/targets.example.yaml](examples/targets.example.yaml), which explains every field.
+
+The file is checked strictly, and every problem is reported at once with the key and target it
+belongs to:
+
+```text
+Invalid config (targets.yaml):
+  - targets[0] (movie-fri).showtime_window.start: unquoted time: YAML reads it as the number 1080; quote it: "18:00"
+  - targets[0] (movie-fri).seat: unknown key (did you mean 'seats'?)
+  - targets[0] (movie-fri).dates: 2026-11-01 is in the past (today is 2026-11-03 in Asia/Kolkata)
+```
+
+- **Quote your times** (`"18:00"`). Unquoted, YAML silently turns `18:00` into the number 1080.
+- **Typos are errors**, not silently ignored keys, and duplicate keys are refused.
+- **Secrets are refused.** A key such as `telegram_token` is rejected with a pointer to `.env`, and
+  error messages never repeat the values you wrote.
+- **Limits are fixed:** 1–10 seats, at most 3 targets, polling no faster than every 60 seconds.
 
 ## Ground rules (built in, not optional)
 
@@ -51,7 +70,7 @@ check passes.
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Project skeleton, CLI outline, network-locked test harness, virtual clock | Done |
-| 1 | Config file and domain models | Planned |
+| 1 | Config file and domain models | Done |
 | 2 | Show ranking and seat selection | Planned |
 | 3 | Storage (SQLite) and the booking state machine | Planned |
 | 4 | Watcher, scheduler and rate limiting | Planned |
@@ -95,7 +114,12 @@ placeholders: each one prints the phase that implements it and exits.
 ## Project layout
 
 ```
-src/showwatch/      the package (clock, CLI; more modules arrive phase by phase)
+src/showwatch/
+  config.py         targets.yaml loading and validation
+  models.py         Show, SeatMap, Snapshot, Change and friends
+  limits.py         the fixed safety limits (seats, targets, polling floor)
+  clock.py, cli.py, errors.py
+examples/           targets.example.yaml, the annotated starting point
 tests/unit/         pure-logic tests        tests/support/  test helpers (FakeClock, network lockdown)
 docs/SPEC.md        the full build specification (source of truth)
 docs/DESIGN-NOTES.md  risks, open questions and proposed resolutions

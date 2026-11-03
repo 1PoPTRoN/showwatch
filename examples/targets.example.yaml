@@ -1,0 +1,31 @@
+# ShowWatch targets file (SPEC §8). Copy it to targets.yaml (gitignored) and edit.
+#
+# Rules worth knowing:
+#   * Quote every time: "18:00", not 18:00. Unquoted, YAML reads 18:00 as the number 1080.
+#   * Quote titles or labels that look like numbers or booleans: "007", "ON".
+#   * Never put secrets here (bot token, chat id, API keys). They belong in .env (see .env.example).
+#   * Unknown keys are errors, so typos are caught rather than silently ignored.
+version: 1
+timezone: Asia/Kolkata        # every time below is a wall-clock time in this zone
+notifier: telegram            # telegram | console
+polling:
+  base_interval_s: 900        # normal polling interval per target
+  hot_interval_s: 60          # interval inside a hot window; 60 s is the hard floor (C4)
+  jitter_pct: 20              # 0..30; randomises each interval by up to +/- this percentage
+  hot_windows:                # when cinemas tend to open listings
+    - { days: [Mon, Tue, Wed, Thu, Fri, Sat, Sun], start: "08:00", end: "13:00" }
+heartbeat_at: "09:00"         # daily "still watching" summary; null turns it off
+targets:                      # at most 3 (C5)
+  - id: movie-fri             # lowercase letters, digits and hyphens
+    mode: notify-only         # notify-only | dry-run | assist  (defaults to notify-only)
+    movie: "<title>"
+    city: bengaluru
+    language: hindi
+    formats: [IMAX 2D, 4DX, 2D]           # preference order, at least one
+    venues: ["<cinema A>", "<cinema B>"]  # ranked; [] (or omitted) = any venue
+    dates: [2026-12-18, 2026-12-19]       # YYYY-MM-DD; none may be in the past
+    showtime_window: { start: "18:00", end: "22:30" }   # both ends included; no crossing midnight
+    seats: 2                              # 1..10 (C5)
+    preferred_rows: [H, J, K]             # best first
+    avoid_rows: [A, B, C]
+    max_price_per_seat: 600               # rupees
