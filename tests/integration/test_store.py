@@ -15,8 +15,6 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from tests.support.clock import FakeClock
-from tests.support.targets import make_target
 
 from showwatch import store as store_module
 from showwatch.config import Mode
@@ -30,6 +28,8 @@ from showwatch.errors import (
 from showwatch.models import Change, ChangeKind, Show
 from showwatch.state import GUARDS, TRANSITIONS, State, StateMachine, Trigger
 from showwatch.store import Store, TransitionResult
+from tests.support.clock import FakeClock
+from tests.support.targets import make_target
 
 SHOW = Show(
     "s1", "Cinema A", "IMAX 2D", "hindi", datetime(2026, 12, 18, 13, 0, tzinfo=UTC), 450, "u"
