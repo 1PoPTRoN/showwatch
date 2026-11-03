@@ -69,3 +69,11 @@ class Blocked(Exception):
 
 class TransientError(Exception):
     """A temporary failure (5xx, timeout, network). Retried later with backoff."""
+
+
+class NotifierConfigError(Exception):
+    """The configured notifier cannot start (for example, Telegram env vars are missing)."""
+
+
+class NotificationFailed(Exception):
+    """A message could not be delivered. Its text never holds secrets or token-bearing URLs."""

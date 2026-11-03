@@ -93,11 +93,11 @@ class Watcher:
             return PollOutcome.RATE_LIMITED
         except Blocked as exc:
             await self._store.record_poll_failure(target_id)
-            await self._blocked(target_id, exc.reason)
+            await self._blocked(record.target, exc.reason)
             return PollOutcome.BLOCKED
         except Exception as exc:  # noqa: BLE001 (a long-running watcher must survive any failure)
             await self._store.record_poll_failure(target_id)
-            await self._failed(target_id, exc)
+            await self._failed(record.target, exc)
             return PollOutcome.FAILED
         self._failures.pop(target_id, None)
         self._failing_since.pop(target_id, None)
@@ -126,10 +126,11 @@ class Watcher:
                 already = diff(Snapshot(target.id, view.taken_at, {}), view)
                 await self._notify(
                     Event(
-                        f"{target.id}:already_open",
-                        EventKind.ALREADY_OPEN,
-                        target.id,
-                        self._clock.now(),
+                        event_id=f"{target.id}:already_open",
+                        kind=EventKind.ALREADY_OPEN,
+                        at=self._clock.now(),
+                        target_id=target.id,
+                        movie=target.movie,
                         changes=tuple(already),
                     )
                 )
@@ -146,10 +147,11 @@ class Watcher:
     ) -> None:
         await self._notify(
             Event(
-                f"{result.attempt_id}:detected",
-                EventKind.DETECTED,
-                target.id,
-                result.at,
+                event_id=f"{result.attempt_id}:detected",
+                kind=EventKind.DETECTED,
+                at=result.at,
+                target_id=target.id,
+                movie=target.movie,
                 attempt_id=result.attempt_id,
                 changes=tuple(changes),
             )
@@ -169,7 +171,8 @@ class Watcher:
                 "%s: detected, but no seat selection is wired up (%s)", target.id, target.mode
             )
 
-    async def _blocked(self, target_id: str, reason: str) -> None:
+    async def _blocked(self, target: Target, reason: str) -> None:
+        target_id = target.id
         try:
             result = await self._store.fire(target_id, Trigger.BLOCKED, reason=reason)
         except IllegalTransition:
@@ -178,15 +181,17 @@ class Watcher:
         log.warning("%s: blocked (%s); paused until you resume it", target_id, reason)
         await self._notify(
             Event(
-                f"{target_id}:blocked:{result.at.isoformat()}",
-                EventKind.BLOCKED,
-                target_id,
-                result.at,
+                event_id=f"{target_id}:blocked:{result.at.isoformat()}",
+                kind=EventKind.BLOCKED,
+                at=result.at,
+                target_id=target_id,
+                movie=target.movie,
                 reason=reason,
             )
         )
 
-    async def _failed(self, target_id: str, exc: Exception) -> None:
+    async def _failed(self, target: Target, exc: Exception) -> None:
+        target_id = target.id
         now = self._clock.now()
         count = self._failures.get(target_id, 0) + 1
         self._failures[target_id] = count
@@ -198,10 +203,11 @@ class Watcher:
         if count == FAILURES_BEFORE_ALERT:
             await self._notify(
                 Event(
-                    f"{target_id}:poll_failing:{since.isoformat()}",
-                    EventKind.POLL_FAILING,
-                    target_id,
-                    now,
+                    event_id=f"{target_id}:poll_failing:{since.isoformat()}",
+                    kind=EventKind.POLL_FAILING,
+                    at=now,
+                    target_id=target_id,
+                    movie=target.movie,
                     reason=type(exc).__name__,
                 )
             )

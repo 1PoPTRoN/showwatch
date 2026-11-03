@@ -313,7 +313,7 @@ def test_unknown_mode_rejected(fake_clock: FakeClock) -> None:
 
 # --- T1.10 -----------------------------------------------------------------------------------
 
-SECRET = "123456:AAH-very-secret-token"  # noqa: S105 (a fake token the tests must never see echoed)
+SECRET = "123456:AAH-very-secret-token"  # a fake token the tests must never see echoed
 
 
 @pytest.mark.parametrize(

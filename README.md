@@ -4,9 +4,10 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 4 of 10 done).** The config file, show and seat choice, the
-> crash-safe store with its state machine, and the polite polling loop are in place, all tested
-> against simulated sites. Nothing talks to a real website yet, and the CLI commands are placeholders.
+> **Status: early development (Phase 5 of 10 done).** The config file, show and seat choice, the
+> crash-safe store, the polite polling loop and notifications (Telegram or console) are in place, all
+> tested against simulated services. Nothing talks to a real website yet, and the CLI commands are
+> placeholders.
 
 ## Why
 
@@ -79,6 +80,23 @@ that margin is 10 seats. Ties go to the row listed first in the seat map, then t
 - **If booking is already open when you add a target**, the first check says so, rather than
   waiting silently for an opening that has already happened.
 
+## Notifications
+
+Alerts go to **Telegram** (`notifier: telegram`) or to the **console** (`notifier: console`). For
+Telegram, create a bot with @BotFather and put its token and your chat id in `.env`:
+
+```sh
+cp .env.example .env    # then fill in TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+```
+
+You are told when booking opens, when seats are held (with the venue, show time, seats and the
+time left to pay), when a hold runs out, when a target is paused or fails, and once a day that
+ShowWatch is still running. Each alert is delivered once. If Telegram is unavailable, ShowWatch
+retries, and a failed alert is tried again later rather than lost. All times are shown in IST.
+
+Logs are JSON lines in `~/.showwatch/logs/`. Tokens, cookies and token-bearing URLs are redacted
+from every log line, including those from the HTTP library.
+
 ## What happens to a target
 
 Each target moves through a small set of states, and every move is recorded in an audit trail:
@@ -126,7 +144,7 @@ check passes.
 | 2 | Show ranking and seat selection | Done |
 | 3 | Storage (SQLite) and the booking state machine | Done |
 | 4 | Watcher, scheduler and rate limiting | Done |
-| 5 | Notifications (Telegram, console) | Planned |
+| 5 | Notifications (Telegram, console) | Done |
 | 6 | Local fake cinema site for testing | Planned |
 | 7 | Browser executor (stops at the order summary) | Planned |
 | 8 | Orchestrator and the full CLI | Planned |
@@ -174,7 +192,9 @@ src/showwatch/
   store.py          SQLite store: targets, attempts, audit trail, poll results, crash recovery
   watcher/          change detection (pure), poll intervals, the poll loop
   ratelimit.py      the global request gate (20 s spacing, one at a time) and backoff
-  adapters/, notify/  the site and notifier interfaces (implementations arrive in Phases 5-6)
+  notify/           message templates, Telegram and console notifiers, dedup, heartbeat
+  logging.py        JSON-lines logs with secret redaction
+  adapters/         the site interface (implementations arrive in Phase 6)
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py
 examples/           targets.example.yaml, the annotated starting point

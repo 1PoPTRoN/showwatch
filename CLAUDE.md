@@ -45,8 +45,10 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 - Every availability check goes through `PollGate.poll()`; every poll result through `Store.record_poll()`.
 - State changes only through `Store.fire()` (one transaction: state + attempt + audit). Never UPDATE
   `targets.state` directly. Schema changes = append a migration to `store.MIGRATIONS`, never edit one.
-- Store UTC; show users `Asia/Kolkata` via `zoneinfo`.
-- Logs: JSON lines in `~/.showwatch/logs/`, through the redaction filter. Artefacts: `~/.showwatch/runs/<attempt_id>/NN-<step>.png`.
+- Store UTC; show users `Asia/Kolkata`. Artefacts: `~/.showwatch/runs/<attempt_id>/NN-<step>.png`.
+- Logs: `showwatch.logging.configure_logging` (JSON lines, redacted when each record is created). New secret
+  (token, profile path)? `register_secret()` it. Never log raw httpx exceptions (their text holds the URL).
+- The pipeline notifies only through `DedupNotifier` (at most once per event id, never raises).
 - Locators: `get_by_role` / `get_by_text` / `get_by_test_id` only; no deep CSS or XPath.
 - Typed exceptions (§7); no bare `except:`. Pydantic models use `extra="forbid"`; secrets are never read from YAML.
 - Tests: `tests/{unit,integration,e2e}` are auto-marked by folder. Names carry spec ids: `test_t4_7_...`.
@@ -54,6 +56,5 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 
 ## Commands (§6)
 - `make check`: ruff check, ruff format --check, mypy --strict src, mypy tests, pytest -q (all markers). Must be green.
-- `make test`: pytest only.  `make e2e`: pytest -m e2e.  `make fakesite`: run the fake site (Phase 6+).
-- `make fmt`: auto-format and apply safe lint fixes.
+- `make test`, `make e2e` (pytest -m e2e), `make fakesite` (Phase 6+), `make fmt` (format + safe fixes).
 - CLI: `uv run showwatch --help` (login, add, list, status, run, pause, resume, done, cancel, heartbeat, canary, parse).

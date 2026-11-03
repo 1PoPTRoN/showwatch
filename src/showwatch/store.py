@@ -41,7 +41,7 @@ from showwatch.errors import (
     UnknownAttempt,
     UnknownTarget,
 )
-from showwatch.models import Attempt, Change, Show, Snapshot
+from showwatch.models import Attempt, Change, Event, Show, Snapshot
 from showwatch.state import State, StateMachine, Trigger
 
 BUSY_TIMEOUT_S = 10.0
@@ -90,6 +90,14 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             last_success_at TEXT,
             snapshot_json TEXT,
             seen_json TEXT
+        ) STRICT""",
+    ),
+    (  # 3: notification delivery log (each event id at most once)
+        """CREATE TABLE notifications (
+            event_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            target_id TEXT,
+            sent_at TEXT NOT NULL
         ) STRICT""",
     ),
 )
@@ -648,6 +656,27 @@ class Store:
             return [_audit(r) for r in rows]
 
         return await self._run(query)
+
+    # --- notifications -------------------------------------------------------------------------
+
+    async def notification_sent(self, event_id: str) -> bool:
+        return await self._run(
+            lambda c: (
+                c.execute("SELECT 1 FROM notifications WHERE event_id = ?", (event_id,)).fetchone()
+                is not None
+            )
+        )
+
+    async def mark_notification_sent(self, event: Event) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            with _write(conn):
+                conn.execute(
+                    "INSERT OR IGNORE INTO notifications (event_id, kind, target_id, sent_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (event.event_id, event.kind.value, event.target_id, _ts(self._clock.now())),
+                )
+
+        await self._run(write)
 
     # --- startup recovery ---------------------------------------------------------------------
 

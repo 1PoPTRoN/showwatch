@@ -121,21 +121,44 @@ class EventKind(StrEnum):
     ALREADY_OPEN = "already_open"  # the first poll found matching shows already on sale
     BLOCKED = "blocked"  # CAPTCHA, queue or block page: the target is paused (C3)
     POLL_FAILING = "poll_failing"  # availability checks keep failing
+    NO_MATCH = "no_match"  # booking opened, but no seats match the rules
+    DRY_RUN = "dry_run"  # dry run finished: the seats it would have chosen
+    HELD = "held"  # seats held at the order summary; the user pays (C1)
+    EXPIRED = "expired"  # the hold ran out
+    FAILED = "failed"  # the attempt failed (seat race lost, logged out, page changed)
+    HEARTBEAT = "heartbeat"  # the daily "still watching" summary
 
 
 @dataclass(frozen=True)
+class TargetStatus:
+    """One target's line in the heartbeat."""
+
+    target_id: str
+    movie: str
+    state: str
+    last_poll_at: datetime | None
+
+
+@dataclass(frozen=True, kw_only=True)
 class Event:
     """Something to tell the user. `event_id` is the dedup key: one id is delivered at most once."""
 
     event_id: str
     kind: EventKind
-    target_id: str
     at: datetime
+    target_id: str | None = None  # None for whole-app events (the heartbeat)
+    movie: str | None = None
     attempt_id: str | None = None
     changes: tuple[Change, ...] = ()
     reason: str | None = None
+    show: Show | None = None
+    seats: tuple[str, ...] = ()  # seat labels as the site shows them, e.g. ("H9", "H10")
+    expires_at: datetime | None = None  # seat-hold expiry
+    statuses: tuple[TargetStatus, ...] = ()  # heartbeat only
 
     def __post_init__(self) -> None:
         if not self.event_id:
             raise ValueError("Event.event_id must not be empty")
         _require_aware(self.at, "Event.at")
+        if self.expires_at is not None:
+            _require_aware(self.expires_at, "Event.expires_at")

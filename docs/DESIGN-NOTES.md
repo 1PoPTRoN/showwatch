@@ -155,13 +155,27 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 
 ## Phase 5 — notifier and logging (C7)
 
-- **P5.1** A `logging.Filter` on a *logger* never sees records from child loggers such as `httpx`, and
-  `caplog` uses its own handler. → Redact when the record is created (a LogRecord factory), keep
-  handler filters as a second layer, and set the `httpx`/`httpcore` loggers to WARNING. `proposed`
-- **P5.2** `httpx` exception text includes the URL, and so the token. → Never log raw exception text
-  or tracebacks from the Telegram client; log a sanitised summary instead. `proposed`
-- **P5.3** Use `parse_mode=HTML` with escaping. MarkdownV2 makes every `-`, `.`, `(` in a movie title a
-  potential 400 error. `proposed`
+- **P5.1 Redact when a record is created.** A LogRecord factory formats and redacts every message,
+  turns any exception into redacted text and drops the raw exception object, which may hold a
+  token-bearing URL. This covers every logger (httpx too), every handler and pytest's `caplog`.
+  Handler filters repeat it as a second layer, and httpx/httpcore are set to WARNING. Exact secrets
+  are registered (`register_secret`: the bot token now, the profile path in Phase 7), and patterns
+  catch token, cookie, Authorization, `?token=` and API-key shapes. `done`
+- **P5.2 Errors never carry the URL.** The Telegram client turns httpx errors into a sanitised
+  `NotificationFailed` (status or error class only, no chained exception). It is tested *without*
+  log redaction, so the exception is clean wherever it ends up. `done`
+- **P5.3** `parse_mode=HTML`, escaping everything from the config or the site; only our own `<b>`
+  and `<code>` tags remain. Messages are capped at 4096 characters, cut on a line boundary, and
+  free-text reasons are clipped. `done`
+- **P5.4 At most once, never lost.** `DedupNotifier` records an event id only *after* delivery, so a
+  failed send is retried next time and a crash at worst repeats one message. It never raises. The
+  daily heartbeat id is per local day; a manual `showwatch heartbeat` always sends. `done`
+- **P5.5 Retries:** Telegram 5xx and network errors get the first try plus 3 retries (1, 2, 4 s on
+  the injected clock). A 429 waits `retry_after` (capped at 60 s). Any other 4xx fails at once. `done`
+- **P5.6 Hold messages never overstate the time:** minutes left are rounded down. `done`
+- **P3.4** (from Phase 3) The countdown re-sent after a restart needs its own event id (for example
+  `<attempt>:held:recovered:<boot time>`), or dedup will swallow it. → The orchestrator builds that id
+  in Phase 8. `proposed`
 
 ## Phases 6–7 — fake site and executor
 
