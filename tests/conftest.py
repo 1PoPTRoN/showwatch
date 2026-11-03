@@ -4,14 +4,17 @@
   from tests/support/network.py. It is always on and no test can switch it off.
 * Layers: each test is marked unit / integration / e2e from its folder, so `-m` selects reliably.
 * `fake_clock`: virtual time (tests/support/clock.py).
+* `store`: a fresh SQLite store in a temp dir, on `fake_clock`.
 
-Later phases add the tmp store and fake-site fixtures here.
+Later phases add the fake-site fixtures here.
 """
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
+from showwatch.store import Store
 from tests.support import network
 from tests.support.clock import FakeClock
 
@@ -63,3 +66,12 @@ def _dns_lockdown(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def fake_clock() -> FakeClock:
     return FakeClock()
+
+
+@pytest.fixture
+async def store(tmp_path: Path, fake_clock: FakeClock) -> AsyncIterator[Store]:
+    db = await Store.open(tmp_path / "showwatch.db", clock=fake_clock)
+    try:
+        yield db
+    finally:
+        await db.close()

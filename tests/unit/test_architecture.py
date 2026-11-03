@@ -141,9 +141,9 @@ def test_t0_5_checker_allows(snippet: str) -> None:
     assert find_clock_violations(snippet) == []
 
 
-# --- pure modules (SPEC §5): matcher/ and watcher/diff.py do no I/O and read no clock ----------
+# --- pure modules (SPEC §5): matcher/, watcher/diff.py and the state machine: no I/O, no clock --
 
-PURE_PATHS = (SRC / "matcher", SRC / "watcher" / "diff.py")
+PURE_PATHS = (SRC / "matcher", SRC / "watcher" / "diff.py", SRC / "state.py")
 PURE_ALLOWED_IMPORTS = frozenset(
     {
         "__future__",
@@ -155,12 +155,15 @@ PURE_ALLOWED_IMPORTS = frozenset(
         "itertools",
         "math",
         "operator",
+        "types",
         "typing",
         "zoneinfo",
         "showwatch.config",
+        "showwatch.errors",
         "showwatch.limits",
         "showwatch.models",
         "showwatch.matcher",
+        "showwatch.state",
         "showwatch.watcher.diff",
     }
 )

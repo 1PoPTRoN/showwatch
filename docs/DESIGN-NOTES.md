@@ -56,8 +56,8 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
   (see P8.2 for runtime expiry). `done`
 - **P1.9** The C4/C5 numbers live only in `limits.py`, pinned by `test_limits.py`, so config validation
   and the Phase 4 limiter cannot drift apart. `done`
-- **P1.10 To revisit in Phase 8:** `showwatch add` must enforce "at most 3 targets" across the whole
-  store, not only within one file. `proposed`
+- **P1.10** `showwatch add` must enforce "at most 3 targets" across the whole store, not only within
+  one file. `done` (Phase 3, see P3.9)
 
 ## Phase 2 — matcher
 
@@ -86,19 +86,35 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 ## Phase 3 — store and state machine
 
 - **P3.1 Target state versus attempt state.** §3 mixes target-level states (IDLE, WATCHING, PAUSED) with
-  attempt-level ones. → The target row holds the current state. An attempt is created on
-  `change_detected` and closed when the target returns to WATCHING or reaches BOOKED. An attempt is
-  *active* while it is in DETECTED/SELECTING/HELD/AWAITING_PAYMENT/FAILED, and a unique partial index on
-  `attempts(target_id) WHERE active` enforces one per target. Audit rows from target-only transitions
-  (start, blocked while WATCHING, resume) have `attempt_id = NULL`. `proposed`
-- **P3.2 Recovery needs transitions §3 doesn't list.** SELECTING → WATCHING and HELD → EXPIRED are not in
-  the table, and DETECTED (a crash before notify) is not covered at all. → Add system events
-  `recover` (DETECTED|SELECTING → WATCHING) and allow `hold_expired` from HELD too. **[ask]** (it edits §3)
-- **P3.3** stdlib `sqlite3` is synchronous. → Use one connection, run calls via `asyncio.to_thread`
-  under an `asyncio.Lock`, and use `BEGIN IMMEDIATE` for writes. `proposed`
+  attempt-level ones. → The target row holds the current state (the single source of truth). An attempt
+  is created on `change_detected` and closed when the target returns to WATCHING or reaches BOOKED. One
+  rule, no exceptions: FAILED, EXPIRED, RELEASED and PAUSED-mid-selection keep it open until then. A
+  unique partial index `attempts(target_id) WHERE closed_at IS NULL` enforces one open attempt per
+  target. Audit rows from target-only transitions have `attempt_id = NULL`. `decided` (user: "continue")
+- **P3.2 Recovery transitions.** Added `recover` (DETECTED|SELECTING → WATCHING), and `hold_expired` is
+  allowed from HELD too. `decided` (user: "continue")
+- **P3.3** stdlib `sqlite3` is synchronous. → One connection per Store, with calls in `asyncio.to_thread`
+  under a **thread** lock. An asyncio lock would be released when a task is cancelled while its thread
+  still runs, which would put two threads on one connection. Writes use `BEGIN IMMEDIATE`, re-reading
+  state under the write lock. `done`
 - **P3.4 Dedup versus re-notify.** Event ids are deterministic (`<attempt>:<kind>`), so the countdown
   re-notification on recovery needs its own id (for example `...:recovered:<boot>`). Otherwise dedup
-  swallows it. `proposed`
+  swallows it. `proposed` (Phase 5)
+- **P3.5 `user_pause`.** §6 has `showwatch pause`, but §3 has no transition for it. → Added
+  `user_pause` (IDLE|WATCHING → PAUSED). `done` (flagged in the Phase 3 report)
+- **P3.6 Mode guards live in the state machine.** notify-only can never reach SELECTING (no browser,
+  T8.1), and dry-run can never reach HELD (no seats ever clicked). Both are proven by searching every
+  state each mode can reach, not just by spot checks. `done`
+- **P3.7 A crash between detection and the alert must not lose the alert.** Recovery reports
+  attempts it closed with `recover`, together with their stored `Change`, so the orchestrator can
+  re-send the opening alert (deduped, P3.4). A HELD attempt whose expiry was never read is treated as
+  expired: it cannot be tracked after a restart. `done`
+- **P3.8 Atomicity is tested, not assumed.** A test makes the last write of a transition fail (via a
+  real SQLite trigger) and checks that the earlier writes were rolled back. This found that no earlier
+  test proved it. Tables are STRICT, which caught a bytes-into-TEXT bug on the first run. `done`
+- **P3.9** At most 3 *unfinished* (non-BOOKED) targets, enforced in `Store.add_target` (closes P1.10).
+  §6 has no `remove` command, so a target that is never booked would occupy a slot for good.
+  → Phase 8 needs a way to retire targets (for example `showwatch remove <id>`). **[ask]** (by Phase 8)
 
 ## Phase 4 — watcher, scheduler, rate limiting
 

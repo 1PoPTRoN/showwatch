@@ -41,6 +41,8 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 - Inject every side effect: Clock, SiteAdapter / injected httpx client, Store.
 - C4/C5 numbers live only in `limits.py` (pinned by test_limits.py); import them, never repeat literals.
 - User config enters only via `config.parse_settings*` / `load_settings` (secret + past-date checks).
+- State changes only through `Store.fire()` (one transaction: state + attempt + audit). Never UPDATE
+  `targets.state` directly. Schema changes = append a migration to `store.MIGRATIONS`, never edit one.
 - Store UTC; show users `Asia/Kolkata` via `zoneinfo`.
 - Logs: JSON lines in `~/.showwatch/logs/`, through the redaction filter. Artefacts: `~/.showwatch/runs/<attempt_id>/NN-<step>.png`.
 - Locators: `get_by_role` / `get_by_text` / `get_by_test_id` only; no deep CSS or XPath.

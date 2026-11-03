@@ -2,7 +2,7 @@
 
 The field shapes are the public interface and must not change without asking. `__post_init__`
 adds guarantees later phases rely on: values are immutable, and every datetime is tz-aware.
-`Attempt` and `Event` arrive with the store (Phase 3) and the notifier (Phase 5).
+`Event` arrives with the notifier (Phase 5).
 """
 
 from collections.abc import Mapping
@@ -90,3 +90,27 @@ class Change:
     target_id: str
     on_date: date
     shows: tuple[Show, ...]
+
+
+@dataclass(frozen=True)
+class Attempt:
+    """One detection-to-outcome cycle of a target (SPEC §3). Open while `closed_at` is None.
+
+    The target's current state lives on the target (store.TargetRecord); an attempt records the
+    cycle: the change that opened it, the seat-hold expiry once known, and how it ended.
+    """
+
+    attempt_id: str
+    target_id: str
+    opened_at: datetime
+    change: Change
+    expires_at: datetime | None = None
+    closed_at: datetime | None = None
+    outcome: str | None = None  # e.g. "notified", "expired", "booked"; set when closed
+
+    def __post_init__(self) -> None:
+        _require_aware(self.opened_at, "Attempt.opened_at")
+        for name in ("expires_at", "closed_at"):
+            value = getattr(self, name)
+            if value is not None:
+                _require_aware(value, f"Attempt.{name}")

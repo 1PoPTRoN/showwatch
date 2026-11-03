@@ -1,7 +1,7 @@
 """Typed exceptions (SPEC §5: errors are typed, never bare).
 
-The §7 errors (RateLimited, Blocked, TransientError, LocatorNotFound, PaymentBoundaryError,
-IllegalTransition) are added here by the phases that raise them.
+The remaining §7 errors (RateLimited, Blocked, TransientError, LocatorNotFound,
+PaymentBoundaryError) are added here by the phases that raise them.
 """
 
 from collections.abc import Sequence
@@ -19,3 +19,31 @@ class ConfigError(Exception):
         self.source = source
         header = f"Invalid config ({source})" if source else "Invalid config"
         super().__init__(header + ":\n" + "\n".join(f"  - {p}" for p in self.problems))
+
+
+class IllegalTransition(Exception):
+    """A trigger the state machine does not allow from the current state or mode (SPEC §3)."""
+
+
+class StoreError(Exception):
+    """The store cannot do what was asked."""
+
+
+class UnknownTarget(StoreError):
+    """No target with this id exists."""
+
+
+class UnknownAttempt(StoreError):
+    """No attempt with this id exists."""
+
+
+class DuplicateTarget(StoreError):
+    """A target with this id already exists."""
+
+
+class TargetLimitReached(StoreError):
+    """Adding the target would exceed the personal-scale target limit (C5)."""
+
+
+class AttemptConflict(StoreError):
+    """The database refused a second open attempt for one target."""

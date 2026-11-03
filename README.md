@@ -4,9 +4,9 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 2 of 10 done).** The config file format and the logic that picks
-> the best show and seats are in place. Nothing talks to any website yet, and the CLI commands are
-> placeholders.
+> **Status: early development (Phase 3 of 10 done).** The config file, the logic that picks the best
+> show and seats, and the crash-safe store with its booking state machine are in place. Nothing talks
+> to any website yet, and the CLI commands are placeholders.
 
 ## Why
 
@@ -61,6 +61,25 @@ Other rows get no bonus, and avoided rows are never used. A preferred row theref
 row unless its best free seats are further off-centre than its bonus. For your last preferred row,
 that margin is 10 seats. Ties go to the row listed first in the seat map, then to the left.
 
+## What happens to a target
+
+Each target moves through a small set of states, and every move is recorded in an audit trail:
+
+```text
+IDLE → WATCHING → DETECTED ─┬─ notify-only: alert sent → back to WATCHING
+                            └─ dry-run / assist → SELECTING ─┬─ dry-run: screenshot → WATCHING
+                                                             └─ assist → HELD → AWAITING_PAYMENT
+                                                                    you pay → BOOKED
+                                                                    hold runs out → EXPIRED → WATCHING
+CAPTCHA, queue or block page → PAUSED (until you resume)      errors → FAILED (until you resume)
+```
+
+The mode is enforced by the state machine itself: a `notify-only` target can never reach seat
+selection, and a `dry-run` target can never hold seats. State lives in a local SQLite database.
+Every change happens completely or not at all, and if ShowWatch is stopped mid-way, it recovers on
+the next start. An interrupted selection goes back to watching, an expired hold is closed, and a hold
+that is still running keeps its countdown.
+
 ## Ground rules (built in, not optional)
 
 - **Payment is never automated.** ShowWatch stops at the order summary. Every click passes a guard
@@ -87,7 +106,7 @@ check passes.
 | 0 | Project skeleton, CLI outline, network-locked test harness, virtual clock | Done |
 | 1 | Config file and domain models | Done |
 | 2 | Show ranking and seat selection | Done |
-| 3 | Storage (SQLite) and the booking state machine | Planned |
+| 3 | Storage (SQLite) and the booking state machine | Done |
 | 4 | Watcher, scheduler and rate limiting | Planned |
 | 5 | Notifications (Telegram, console) | Planned |
 | 6 | Local fake cinema site for testing | Planned |
@@ -133,10 +152,13 @@ src/showwatch/
   config.py         targets.yaml loading and validation
   models.py         Show, SeatMap, Snapshot, Change and friends
   matcher/          pure show ranking and seat choice (no I/O, no clock)
+  state.py          the booking state machine, with mode guards
+  store.py          SQLite store: targets, attempts, audit trail, crash recovery
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py
 examples/           targets.example.yaml, the annotated starting point
-tests/unit/         pure-logic tests        tests/support/  test helpers (FakeClock, network lockdown)
+tests/unit/         pure-logic tests        tests/integration/  store tests on real SQLite files
+tests/support/      test helpers (FakeClock, network lockdown, seat maps, targets)
 docs/SPEC.md        the full build specification (source of truth)
 docs/DESIGN-NOTES.md  risks, open questions and proposed resolutions
 ```
