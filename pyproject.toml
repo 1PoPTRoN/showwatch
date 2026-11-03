@@ -1,0 +1,92 @@
+[project]
+name = "showwatch"
+version = "0.1.0"
+description = "Personal assistant that watches for movie booking openings and holds good seats; payment always stays manual."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "httpx>=0.28.1",
+    "playwright>=1.64.1",
+    "pydantic>=2",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+showwatch = "showwatch.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.23,<0.12.0"]
+build-backend = "uv_build"
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# The spec is kept verbatim; ruff would otherwise reformat the Python blocks inside it.
+extend-exclude = ["docs/SPEC.md"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F",   # pycodestyle + pyflakes
+    "I",             # import order
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "SIM",           # simplify
+    "ASYNC",         # async pitfalls (blocking calls in async code)
+    "PT",            # pytest style
+    "RUF",           # ruff-specific
+    "DTZ",           # naive datetimes (we store tz-aware UTC only)
+    "BLE",           # blind `except Exception` must be deliberate
+    "T20",           # no print() in src
+    "S",             # bandit security checks
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "T20"]   # asserts and prints are fine in tests
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+# --allow-hosts: pytest-socket network lockdown (SPEC §9). Every test may only connect to loopback.
+addopts = ["-ra", "--strict-markers", "--strict-config", "--allow-hosts=127.0.0.1,::1"]
+markers = [
+    "unit: pure logic, no I/O (tests/unit, auto-applied)",
+    "integration: store, watcher with stub adapter, notifier with respx (tests/integration, auto-applied)",
+    "e2e: Playwright against the local fake site (tests/e2e, auto-applied)",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+xfail_strict = true
+# Warnings are errors: catches "coroutine was never awaited" and similar async bugs early.
+filterwarnings = ["error"]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.170.14",
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "pytest-socket>=0.8.1",
+    "respx>=0.23.1",
+    "ruff>=0.17.3",
+    "starlette>=1.10.0",
+    "types-pyyaml>=6.0.12.20261103",
+    "uvicorn>=0.54.0",
+]

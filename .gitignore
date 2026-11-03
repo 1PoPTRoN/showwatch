@@ -218,3 +218,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- ShowWatch -------------------------------------------------------------
+# Never commit secrets, browser profiles, run artefacts or local state (C2, C7).
+.env.*
+!.env.example
+.showwatch/
+profile/
+browser-profile/
+runs/
+# Calibration drafts are recorded from the live site and may hold account-specific URLs.
+calibration/*.draft.yaml
+# The user's real targets file (examples/targets.example.yaml is the committed template).
+/targets.yaml
