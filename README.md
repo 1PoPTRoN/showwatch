@@ -4,8 +4,9 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 1 of 10 done).** The config file format and its validation are
-> in place. Nothing talks to any website yet, and the CLI commands are placeholders.
+> **Status: early development (Phase 2 of 10 done).** The config file format and the logic that picks
+> the best show and seats are in place. Nothing talks to any website yet, and the CLI commands are
+> placeholders.
 
 ## Why
 
@@ -46,6 +47,20 @@ Invalid config (targets.yaml):
   error messages never repeat the values you wrote.
 - **Limits are fixed:** 1–10 seats, at most 3 targets, polling no faster than every 60 seconds.
 
+## How shows and seats are chosen
+
+**Shows.** A show qualifies only if it matches your language and one of your formats, starts inside
+your showtime window (local time, both ends included), costs no more than your maximum, and is at one
+of your cinemas (or you listed none). Qualifying shows are ordered by your cinema ranking, then your
+format ranking, then the earliest start.
+
+**Seats.** Every run of adjacent free seats of the size you asked for is a candidate. Runs never cross
+an aisle or a taken seat. A candidate scores **row bonus minus distance from the centre of the row**.
+Your first preferred row is worth `10 × (number of preferred rows)`, the next one 10 less, and so on.
+Other rows get no bonus, and avoided rows are never used. A preferred row therefore beats an ordinary
+row unless its best free seats are further off-centre than its bonus. For your last preferred row,
+that margin is 10 seats. Ties go to the row listed first in the seat map, then to the left.
+
 ## Ground rules (built in, not optional)
 
 - **Payment is never automated.** ShowWatch stops at the order summary. Every click passes a guard
@@ -71,7 +86,7 @@ check passes.
 |---|---|---|
 | 0 | Project skeleton, CLI outline, network-locked test harness, virtual clock | Done |
 | 1 | Config file and domain models | Done |
-| 2 | Show ranking and seat selection | Planned |
+| 2 | Show ranking and seat selection | Done |
 | 3 | Storage (SQLite) and the booking state machine | Planned |
 | 4 | Watcher, scheduler and rate limiting | Planned |
 | 5 | Notifications (Telegram, console) | Planned |
@@ -117,6 +132,7 @@ placeholders: each one prints the phase that implements it and exits.
 src/showwatch/
   config.py         targets.yaml loading and validation
   models.py         Show, SeatMap, Snapshot, Change and friends
+  matcher/          pure show ranking and seat choice (no I/O, no clock)
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py
 examples/           targets.example.yaml, the annotated starting point

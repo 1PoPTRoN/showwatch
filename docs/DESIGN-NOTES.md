@@ -22,6 +22,8 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
   across processes. `proposed`
 - **X4. Tooling gaps.** §9/§11 ask for coverage numbers, but no coverage tool is in §4. Hanging async
   or e2e tests are best caught by a per-test timeout. → Add `pytest-cov` and `pytest-timeout` (dev only). **[ask]**
+  Meanwhile, coverage is measured with a throwaway tool that changes no project files:
+  `uv run --locked --with coverage coverage run --branch --source=src/showwatch -m pytest`.
 - **X5. Warnings are errors** in pytest, so "coroutine was never awaited" and similar async bugs fail
   loudly instead of passing silently. `done` (Phase 0)
 - **X6. Lockdown false passes.** A "connect is blocked" test that accepts any exception would pass
@@ -61,10 +63,25 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 
 - **P2.1 T2.3 versus the exact formula.** The last preferred row's bonus is only 10. A preferred block more
   than 10 cells off-centre therefore *loses* to a central block in a non-preferred row, which happens on
-  wide rows (40 seats). The formula is the contract, so T2.3 will use an offset under 10, plus one extra
-  test that documents the crossover. Change the formula only if the user wants "preferred always wins". **[ask]**
-- **P2.2** `start_col` indexes on-screen cells, gaps included. It is not a printed seat number. `proposed`
-- **P2.3** The show window compares local `Asia/Kolkata` time, with both ends inclusive. `proposed`
+  wide rows (40 seats). The formula is the contract, so T2.3 uses an offset under 10, and
+  `test_t2_3_crossover_beyond_the_bonus_is_documented` pins the crossover. `decided` (the user said "move
+  ahead" on the recommendation to keep §7 as written)
+- **P2.2** `start_col` indexes on-screen cells, gaps included. It is not a printed seat number. `done`
+- **P2.3** The show window compares local wall-clock time, with both ends inclusive. `done`
+- **P2.4 `rank_shows` needs a timezone.** The §7 signature `rank_shows(shows, target)` cannot know which
+  wall clock the window is written in. → An optional keyword `tz=` defaults to Asia/Kolkata, so calls
+  written to the §7 signature still work. The orchestrator passes `settings.tz`. `done` (flagged in the
+  Phase 2 report as an additive interface change)
+- **P2.5 Exact arithmetic.** Seat scores are computed doubled, as integers, so float rounding can
+  never decide a tie. `done`
+- **P2.6 Total order.** Fields after `show_id` break any leftover tie, so the result never depends on
+  input order, even if a site repeats an id. `done`
+- **P2.7 Venue names must match the site's names** (ignoring case and spacing). "PVR Orion" will not
+  match "PVR: Orion Mall, Rajajinagar". → Revisit in Phase 10: calibration should list the exact
+  venue names so they can be copied into targets.yaml, or matching gets an explicit alias list. Never
+  fuzzy-match silently. `proposed`
+- **P2.8** Row labels match case-insensitively. An avoided row is never chosen, even when it is also
+  preferred (config forbids that overlap anyway). `done`
 
 ## Phase 3 — store and state machine
 

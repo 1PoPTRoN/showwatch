@@ -139,3 +139,103 @@ def test_t0_5_checker_catches(snippet: str) -> None:
 )
 def test_t0_5_checker_allows(snippet: str) -> None:
     assert find_clock_violations(snippet) == []
+
+
+# --- pure modules (SPEC §5): matcher/ and watcher/diff.py do no I/O and read no clock ----------
+
+PURE_PATHS = (SRC / "matcher", SRC / "watcher" / "diff.py")
+PURE_ALLOWED_IMPORTS = frozenset(
+    {
+        "__future__",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "enum",
+        "functools",
+        "itertools",
+        "math",
+        "operator",
+        "typing",
+        "zoneinfo",
+        "showwatch.config",
+        "showwatch.limits",
+        "showwatch.models",
+        "showwatch.matcher",
+        "showwatch.watcher.diff",
+    }
+)
+
+
+def _allowed(name: str) -> bool:
+    return any(name == ok or name.startswith(f"{ok}.") for ok in PURE_ALLOWED_IMPORTS)
+
+
+def find_impure_imports(source: str, module: str, is_package: bool = False) -> list[str]:
+    package = module if is_package else module.rpartition(".")[0]
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found += [f"import {a.name}" for a in node.names if not _allowed(a.name)]
+        elif isinstance(node, ast.ImportFrom):
+            parts = package.split(".")
+            base = ".".join(parts[: len(parts) - node.level + 1]) if node.level else ""
+            target = ".".join(p for p in (base, node.module or "") if p)
+            found += [
+                f"from {target} import {a.name}"
+                for a in node.names
+                if not (_allowed(target) or _allowed(f"{target}.{a.name}"))
+            ]
+    return found
+
+
+def _pure_files() -> list[Path]:
+    files: list[Path] = []
+    for path in PURE_PATHS:
+        files += sorted(path.rglob("*.py")) if path.is_dir() else [path] if path.is_file() else []
+    return files
+
+
+def test_pure_modules_import_nothing_that_does_io() -> None:
+    files = _pure_files()
+    assert files, "no pure modules found: has matcher/ moved?"
+    violations = []
+    for path in files:
+        module = ".".join(path.relative_to(SRC.parent).with_suffix("").parts)
+        is_package = path.name == "__init__.py"
+        module = module.removesuffix(".__init__")
+        violations += [
+            f"{path.name}: {v}" for v in find_impure_imports(path.read_text(), module, is_package)
+        ]
+    assert violations == [], "pure modules must not import I/O:\n" + "\n".join(violations)
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "import asyncio",
+        "import httpx",
+        "import os",
+        "from pathlib import Path",
+        "from showwatch.clock import Clock",
+        "from showwatch import clock",
+        "from ..store import Store",
+        "from .. import executor",
+    ],
+)
+def test_purity_checker_catches(snippet: str) -> None:
+    assert find_impure_imports(snippet, "showwatch.matcher.seats"), snippet
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "from collections.abc import Sequence",
+        "from showwatch.models import SeatMap",
+        "from showwatch import models",
+        "from .shows import rank_shows",
+        "from . import seats",  # a sibling inside matcher/, itself covered by the scan
+        "from zoneinfo import ZoneInfo",
+    ],
+)
+def test_purity_checker_allows(snippet: str) -> None:
+    assert find_impure_imports(snippet, "showwatch.matcher.seats") == [], snippet

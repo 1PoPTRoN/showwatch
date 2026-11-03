@@ -6,7 +6,10 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 - Build phase by phase (SPEC §10): restate goal + files → write the phase's tests first and see them fail
   for the right reason → implement → `make check` green → update README.md (progress table, anything new
   to run) → phase report (§11) → commit `phase N: <summary>` on branch `showwatch-build` → fast-forward
-  `main` to it (`git merge --ff-only`) → STOP and wait for "continue". Ask before any `git push`.
+  `main` to it (`git merge --ff-only`) → `git push origin main` (standing approval from the user) → STOP
+  and wait for "continue". The repo is public: never push anything else without asking.
+- Coverage for the report (no project dependency added):
+  `uv run --locked --with coverage coverage run --branch --source=src/showwatch -m pytest`.
 - Tests are the contract: never weaken, skip, xfail or delete one. If a test looks wrong, say so in the report.
 - Ask first before: adding a dependency not in §4, changing a §7 interface, or changing anything in §2.
 - NEVER contact a real site (bookmyshow.com or any other) from tests or tool runs. Mocked HTTP + local fake site only.
