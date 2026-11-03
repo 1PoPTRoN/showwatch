@@ -4,9 +4,9 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 3 of 10 done).** The config file, the logic that picks the best
-> show and seats, and the crash-safe store with its booking state machine are in place. Nothing talks
-> to any website yet, and the CLI commands are placeholders.
+> **Status: early development (Phase 4 of 10 done).** The config file, show and seat choice, the
+> crash-safe store with its state machine, and the polite polling loop are in place, all tested
+> against simulated sites. Nothing talks to a real website yet, and the CLI commands are placeholders.
 
 ## Why
 
@@ -61,6 +61,24 @@ Other rows get no bonus, and avoided rows are never used. A preferred row theref
 row unless its best free seats are further off-centre than its bonus. For your last preferred row,
 that margin is 10 seats. Ties go to the row listed first in the seat map, then to the left.
 
+## How watching works
+
+- **Only watching targets are polled**, one request at a time, and never more than one request
+  every 20 seconds across all targets.
+- **Each target is polled every `base_interval_s`**, or every `hot_interval_s` (60 seconds at the
+  fastest) inside a hot window. Every interval is randomised by up to `jitter_pct`. If a hot window
+  is about to start, ShowWatch wakes at its start.
+- **Only shows you would accept count.** A new show at a cinema you didn't list, or outside your
+  showtime window, is not an opening. A show that disappears for a moment and comes back is not
+  news either, because ShowWatch remembers everything it has seen.
+- **If the site pushes back, ShowWatch slows down.** A "too many requests" answer doubles the wait
+  for every target, up to an hour, until three polls in a row succeed. Repeated errors slow down
+  just that target, and you hear about it once, at the fifth failure in a row.
+- **A CAPTCHA, a queue or a block page pauses the target** and tells you. ShowWatch never tries to
+  get around it.
+- **If booking is already open when you add a target**, the first check says so, rather than
+  waiting silently for an opening that has already happened.
+
 ## What happens to a target
 
 Each target moves through a small set of states, and every move is recorded in an audit trail:
@@ -107,7 +125,7 @@ check passes.
 | 1 | Config file and domain models | Done |
 | 2 | Show ranking and seat selection | Done |
 | 3 | Storage (SQLite) and the booking state machine | Done |
-| 4 | Watcher, scheduler and rate limiting | Planned |
+| 4 | Watcher, scheduler and rate limiting | Done |
 | 5 | Notifications (Telegram, console) | Planned |
 | 6 | Local fake cinema site for testing | Planned |
 | 7 | Browser executor (stops at the order summary) | Planned |
@@ -153,7 +171,10 @@ src/showwatch/
   models.py         Show, SeatMap, Snapshot, Change and friends
   matcher/          pure show ranking and seat choice (no I/O, no clock)
   state.py          the booking state machine, with mode guards
-  store.py          SQLite store: targets, attempts, audit trail, crash recovery
+  store.py          SQLite store: targets, attempts, audit trail, poll results, crash recovery
+  watcher/          change detection (pure), poll intervals, the poll loop
+  ratelimit.py      the global request gate (20 s spacing, one at a time) and backoff
+  adapters/, notify/  the site and notifier interfaces (implementations arrive in Phases 5-6)
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py
 examples/           targets.example.yaml, the annotated starting point

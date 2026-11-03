@@ -11,6 +11,7 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 - Coverage for the report (no project dependency added):
   `uv run --locked --with coverage coverage run --branch --source=src/showwatch -m pytest`.
 - Tests are the contract: never weaken, skip, xfail or delete one. If a test looks wrong, say so in the report.
+- Gate commit/push on `make check`'s own exit code (`make check && git ...`), never on a piped grep.
 - Ask first before: adding a dependency not in §4, changing a §7 interface, or changing anything in §2.
 - NEVER contact a real site (bookmyshow.com or any other) from tests or tool runs. Mocked HTTP + local fake site only.
 - If anything needs to get around bot detection, a CAPTCHA, a queue or rate limits: STOP and ask.
@@ -41,6 +42,7 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 - Inject every side effect: Clock, SiteAdapter / injected httpx client, Store.
 - C4/C5 numbers live only in `limits.py` (pinned by test_limits.py); import them, never repeat literals.
 - User config enters only via `config.parse_settings*` / `load_settings` (secret + past-date checks).
+- Every availability check goes through `PollGate.poll()`; every poll result through `Store.record_poll()`.
 - State changes only through `Store.fire()` (one transaction: state + attempt + audit). Never UPDATE
   `targets.state` directly. Schema changes = append a migration to `store.MIGRATIONS`, never edit one.
 - Store UTC; show users `Asia/Kolkata` via `zoneinfo`.

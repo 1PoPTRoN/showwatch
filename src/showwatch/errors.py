@@ -1,7 +1,7 @@
 """Typed exceptions (SPEC §5: errors are typed, never bare).
 
-The remaining §7 errors (RateLimited, Blocked, TransientError, LocatorNotFound,
-PaymentBoundaryError) are added here by the phases that raise them.
+The remaining §7 errors (LocatorNotFound, PaymentBoundaryError) are added here by the phase
+that raises them (Phase 7).
 """
 
 from collections.abc import Sequence
@@ -47,3 +47,25 @@ class TargetLimitReached(StoreError):
 
 class AttemptConflict(StoreError):
     """The database refused a second open attempt for one target."""
+
+
+class RateLimited(Exception):
+    """The site asked us to slow down (HTTP 429). Every target backs off (C4)."""
+
+
+class Blocked(Exception):
+    """A CAPTCHA, a virtual queue or a block page (403). The target pauses; no evasion (C3)."""
+
+    REASONS = frozenset({"captcha", "queue", "forbidden"})
+
+    def __init__(self, reason: str) -> None:
+        if reason not in self.REASONS:
+            raise ValueError(
+                f"Blocked reason must be one of {sorted(self.REASONS)}, got {reason!r}"
+            )
+        super().__init__(reason)
+        self.reason = reason
+
+
+class TransientError(Exception):
+    """A temporary failure (5xx, timeout, network). Retried later with backoff."""

@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import TypeAdapter
 
 from showwatch import store as store_module
 from showwatch.config import Mode
@@ -79,7 +80,7 @@ async def step(
 ) -> TransitionResult:
     """Fire `trigger` with the extra data the store requires for it."""
     if trigger is Trigger.CHANGE_DETECTED:
-        return await store.fire(target_id, trigger, change=change_for(target_id))
+        return await store.fire(target_id, trigger, changes=[change_for(target_id)])
     if trigger is Trigger.SUMMARY_REACHED and hold_s is not None:
         return await store.fire(
             target_id, trigger, expires_at=clock.now() + timedelta(seconds=hold_s)
@@ -134,7 +135,7 @@ async def test_attempt_opens_on_detection_and_closes_on_return_to_watching(
     attempt = await store.open_attempt(target_id)
     assert attempt is not None
     assert attempt.attempt_id == detected.attempt_id
-    assert attempt.change == change_for(target_id)
+    assert attempt.changes == (change_for(target_id),)
     assert attempt.opened_at == fake_clock.now()
 
     fake_clock.advance(3)
@@ -210,7 +211,7 @@ async def test_t3_2_a_failure_partway_through_a_transition_writes_nothing(
         raw.close()
 
     with pytest.raises(StoreError, match="injected failure"):
-        await store.fire(target_id, Trigger.CHANGE_DETECTED, change=change_for(target_id))
+        await store.fire(target_id, Trigger.CHANGE_DETECTED, changes=[change_for(target_id)])
     assert await _snapshot(store, target_id) == before
 
 
@@ -246,8 +247,8 @@ async def test_t3_3_concurrent_detection_creates_one_attempt(
 ) -> None:
     target_id = await new_target(store, fake_clock, State.WATCHING)
     results = await asyncio.gather(
-        store.fire(target_id, Trigger.CHANGE_DETECTED, change=change_for(target_id)),
-        store.fire(target_id, Trigger.CHANGE_DETECTED, change=change_for(target_id)),
+        store.fire(target_id, Trigger.CHANGE_DETECTED, changes=[change_for(target_id)]),
+        store.fire(target_id, Trigger.CHANGE_DETECTED, changes=[change_for(target_id)]),
         return_exceptions=True,
     )
     assert _outcomes(results) == (1, 1)
@@ -266,7 +267,7 @@ async def test_t3_3_two_processes_racing_create_one_attempt(
         target_id = await new_target(first, fake_clock, State.WATCHING)
         results = await asyncio.gather(
             *(
-                s.fire(target_id, Trigger.CHANGE_DETECTED, change=change_for(target_id))
+                s.fire(target_id, Trigger.CHANGE_DETECTED, changes=[change_for(target_id)])
                 for s in (first, second, first, second)
             ),
             return_exceptions=True,
@@ -284,8 +285,8 @@ async def test_t3_3_database_itself_refuses_a_second_open_attempt(
     try:
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
             raw.execute(
-                "INSERT INTO attempts (id, target_id, opened_at, change_json) "
-                "VALUES ('forged', ?, 'x', '{}')",
+                "INSERT INTO attempts (id, target_id, opened_at, changes_json) "
+                "VALUES ('forged', ?, 'x', '[]')",
                 (target_id,),
             )
     finally:
@@ -332,7 +333,7 @@ async def test_detected_is_recovered_and_its_change_kept_for_renotifying(
     try:
         report = await restarted.recover()
         assert (await restarted.get_target(target_id)).state is State.WATCHING
-        assert [a.change for a in report.interrupted] == [change_for(target_id)]
+        assert [a.changes for a in report.interrupted] == [(change_for(target_id),)]
     finally:
         await restarted.close()
 
@@ -417,7 +418,7 @@ async def test_t3_6_nothing_leaves_booked(store: Store, fake_clock: FakeClock) -
             await store.fire(
                 target_id,
                 trigger,
-                change=change_for(target_id) if trigger is Trigger.CHANGE_DETECTED else None,
+                changes=[change_for(target_id)] if trigger is Trigger.CHANGE_DETECTED else None,
             )
     assert await _snapshot(store, target_id) == before
 
@@ -470,6 +471,42 @@ async def test_failed_migration_leaves_the_previous_version(
         assert "half_done" not in tables
     finally:
         raw.close()
+
+
+async def test_migration_2_converts_single_changes_into_lists(
+    tmp_path: Path, fake_clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Build a schema-1 database by hand, holding an attempt in the old single-change format.
+    db = tmp_path / "v1.db"
+    raw = sqlite3.connect(db, autocommit=True)
+    monkeypatch.setattr(store_module, "MIGRATIONS", store_module.MIGRATIONS[:1])
+    assert store_module.migrate(raw) == 1
+    monkeypatch.undo()
+    target = make_target(id="old")
+    old_change = change_for("old")
+    raw.execute(
+        "INSERT INTO targets VALUES ('old', ?, 'DETECTED', '2026-11-03T03:30:00+00:00', "
+        "'2026-11-03T03:30:00+00:00')",
+        (target.model_dump_json(),),
+    )
+    raw.execute(
+        "INSERT INTO attempts (id, target_id, opened_at, change_json) "
+        "VALUES ('old-1', 'old', '2026-11-03T03:30:00+00:00', ?)",
+        (TypeAdapter(Change).dump_json(old_change).decode(),),
+    )
+    raw.close()
+
+    async with await Store.open(db, clock=fake_clock) as store:
+        assert await store.schema_version() == len(store_module.MIGRATIONS)
+        assert (await store.get_attempt("old-1")).changes == (old_change,)
+
+
+async def test_changes_must_belong_to_the_target(store: Store, fake_clock: FakeClock) -> None:
+    target_id = await new_target(store, fake_clock, State.WATCHING)
+    with pytest.raises(ValueError, match="not 't1'"):
+        await store.fire(target_id, Trigger.CHANGE_DETECTED, changes=[change_for("other")])
+    with pytest.raises(ValueError, match="change"):
+        await store.fire(target_id, Trigger.CHANGE_DETECTED, changes=[])
 
 
 async def test_database_from_a_newer_version_is_refused(

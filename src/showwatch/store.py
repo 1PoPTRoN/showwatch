@@ -10,6 +10,9 @@ Design choices that keep the data consistent:
 * A unique partial index allows at most one open attempt per target, even against buggy code.
 * Each Store has one connection. Every call runs in a worker thread (the event loop never blocks)
   and holds a thread lock, so a cancelled task can never leave two threads on one connection.
+* `record_poll()` saves a poll result and, if it found something new, opens the attempt in the same
+  transaction. A crash can neither lose a detection (baseline saved, attempt not) nor duplicate one
+  (attempt saved, baseline not).
 * Times come from the injected Clock and are stored as UTC ISO-8601 text.
 """
 
@@ -17,13 +20,13 @@ import asyncio
 import secrets
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Concatenate, Self
+from typing import Concatenate, Self, TypedDict
 
 from pydantic import TypeAdapter
 
@@ -38,7 +41,7 @@ from showwatch.errors import (
     UnknownAttempt,
     UnknownTarget,
 )
-from showwatch.models import Attempt, Change
+from showwatch.models import Attempt, Change, Show, Snapshot
 from showwatch.state import State, StateMachine, Trigger
 
 BUSY_TIMEOUT_S = 10.0
@@ -77,9 +80,46 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         ) STRICT""",
         "CREATE INDEX audit_by_target ON audit(target_id, id)",
     ),
+    (  # 2: an attempt carries every change found by its poll; per-target watch state
+        "ALTER TABLE attempts RENAME COLUMN change_json TO changes_json",
+        "UPDATE attempts SET changes_json = json_array(json(changes_json)) "
+        "WHERE json_type(changes_json) = 'object'",
+        """CREATE TABLE watch (
+            target_id TEXT PRIMARY KEY REFERENCES targets(id),
+            last_poll_at TEXT,
+            last_success_at TEXT,
+            snapshot_json TEXT,
+            seen_json TEXT
+        ) STRICT""",
+    ),
 )
 
-_CHANGE = TypeAdapter(Change)
+
+class _SnapshotRecord(TypedDict):
+    # Snapshot.open_dates is a read-only mapping, which pydantic cannot serialise directly.
+    target_id: str
+    taken_at: datetime
+    open_dates: dict[date, tuple[Show, ...]]
+
+
+_CHANGES = TypeAdapter(tuple[Change, ...])
+_SNAPSHOT = TypeAdapter(_SnapshotRecord)
+
+
+def _snapshot_json(snapshot: Snapshot) -> str:
+    record: _SnapshotRecord = {
+        "target_id": snapshot.target_id,
+        "taken_at": snapshot.taken_at,
+        "open_dates": dict(snapshot.open_dates),
+    }
+    return _SNAPSHOT.dump_json(record).decode()
+
+
+def _snapshot(text: str | None) -> Snapshot | None:
+    if text is None:
+        return None
+    record = _SNAPSHOT.validate_json(text)
+    return Snapshot(record["target_id"], record["taken_at"], record["open_dates"])
 
 
 @dataclass(frozen=True)
@@ -110,6 +150,16 @@ class AuditEntry:
     trigger: Trigger
     reason: str | None
     at: datetime
+
+
+@dataclass(frozen=True)
+class WatchState:
+    """What the watcher remembers about a target between polls."""
+
+    last_poll_at: datetime | None = None
+    last_success_at: datetime | None = None
+    snapshot: Snapshot | None = None  # the latest raw result
+    seen: Snapshot | None = None  # every relevant show ever seen: the change-detection baseline
 
 
 @dataclass(frozen=True)
@@ -198,6 +248,18 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _check_changes(
+    target_id: str, trigger: Trigger, changes: Sequence[Change] | None
+) -> tuple[Change, ...]:
+    found = tuple(changes or ())
+    if (trigger is Trigger.CHANGE_DETECTED) != bool(found):
+        raise ValueError("changes must be given with change_detected, and only then")
+    for change in found:
+        if change.target_id != target_id:
+            raise ValueError(f"change is for {change.target_id!r}, not {target_id!r}")
+    return found
+
+
 def _outcome(previous: State, trigger: Trigger) -> str:
     if trigger is Trigger.USER_DONE:
         return "booked"
@@ -213,7 +275,7 @@ def _attempt(row: sqlite3.Row) -> Attempt:
         attempt_id=row["id"],
         target_id=row["target_id"],
         opened_at=_dt(row["opened_at"]),
-        change=_CHANGE.validate_json(row["change_json"]),
+        changes=_CHANGES.validate_json(row["changes_json"]),
         expires_at=_opt_dt(row["expires_at"]),
         closed_at=_opt_dt(row["closed_at"]),
         outcome=row["outcome"],
@@ -358,24 +420,21 @@ class Store:
         trigger: Trigger,
         *,
         reason: str | None = None,
-        change: Change | None = None,
+        changes: Sequence[Change] | None = None,
         expires_at: datetime | None = None,
     ) -> TransitionResult:
         """Apply `trigger` to the target atomically: state, attempt and audit row together.
 
-        `change` is required with CHANGE_DETECTED (and only then). `expires_at`, the seat-hold
-        expiry, may accompany SEATS_HELD or SUMMARY_REACHED.
+        `changes` (at least one, all for this target) must accompany CHANGE_DETECTED, and only it.
+        `expires_at`, the seat-hold expiry, may accompany SEATS_HELD or SUMMARY_REACHED.
         Raises IllegalTransition (and writes nothing) if the state machine forbids the trigger.
         """
-        if (trigger is Trigger.CHANGE_DETECTED) != (change is not None):
-            raise ValueError("a change must be given with change_detected, and only then")
-        if change is not None and change.target_id != target_id:
-            raise ValueError(f"change is for {change.target_id!r}, not {target_id!r}")
+        found = _check_changes(target_id, trigger, changes)
         if expires_at is not None:
             if trigger not in (Trigger.SEATS_HELD, Trigger.SUMMARY_REACHED):
                 raise ValueError("expires_at may only accompany seats_held or summary_reached")
             _ts(expires_at)  # rejects naive datetimes
-        return await self._run(self._fire, target_id, trigger, reason, change, expires_at)
+        return await self._run(self._fire, target_id, trigger, reason, found, expires_at)
 
     def _fire(
         self,
@@ -383,73 +442,168 @@ class Store:
         target_id: str,
         trigger: Trigger,
         reason: str | None,
-        change: Change | None,
+        changes: tuple[Change, ...],
         expires_at: datetime | None,
     ) -> TransitionResult:
         with _write(conn):
-            row = conn.execute(
-                "SELECT config_json, state FROM targets WHERE id = ?", (target_id,)
+            return self._apply(conn, target_id, trigger, reason, changes, expires_at)
+
+    def _apply(
+        self,
+        conn: sqlite3.Connection,
+        target_id: str,
+        trigger: Trigger,
+        reason: str | None,
+        changes: tuple[Change, ...],
+        expires_at: datetime | None,
+    ) -> TransitionResult:
+        """One transition. The caller holds the write transaction."""
+        row = conn.execute(
+            "SELECT config_json, state FROM targets WHERE id = ?", (target_id,)
+        ).fetchone()
+        if row is None:
+            raise UnknownTarget(f"no target with id {target_id!r}")
+        mode = Target.model_validate_json(row["config_json"]).mode
+        previous = State(row["state"])
+        new_state = StateMachine.next_state(previous, trigger, mode)
+        now = self._clock.now()
+
+        if StateMachine.opens_attempt(trigger):
+            if not changes:  # fire() checks this; repeated for internal callers
+                raise ValueError("change_detected needs at least one change")
+            attempt_id: str | None = self._new_attempt_id(target_id)
+            try:
+                conn.execute(
+                    "INSERT INTO attempts (id, target_id, opened_at, changes_json) "
+                    "VALUES (?, ?, ?, ?)",
+                    (attempt_id, target_id, _ts(now), _CHANGES.dump_json(changes).decode()),
+                )
+            except sqlite3.IntegrityError as exc:
+                if "attempts.target_id" in str(exc):
+                    raise AttemptConflict(
+                        f"target {target_id!r} already has an open attempt"
+                    ) from exc
+                raise StoreError(f"could not record the attempt: {exc}") from exc
+        else:
+            open_row = conn.execute(
+                "SELECT id FROM attempts WHERE target_id = ? AND closed_at IS NULL",
+                (target_id,),
             ).fetchone()
+            attempt_id = open_row["id"] if open_row else None
+
+        if expires_at is not None:
+            if attempt_id is None:
+                raise StoreError(f"target {target_id!r} holds seats but has no open attempt")
+            conn.execute(
+                "UPDATE attempts SET expires_at = ? WHERE id = ?", (_ts(expires_at), attempt_id)
+            )
+        if attempt_id is not None and StateMachine.closes_attempt(new_state):
+            conn.execute(
+                "UPDATE attempts SET closed_at = ?, outcome = ? WHERE id = ?",
+                (_ts(now), _outcome(previous, trigger), attempt_id),
+            )
+        conn.execute(
+            "UPDATE targets SET state = ?, updated_at = ? WHERE id = ?",
+            (new_state.value, _ts(now), target_id),
+        )
+        conn.execute(
+            "INSERT INTO audit "
+            "(target_id, attempt_id, from_state, to_state, event, reason, at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                target_id,
+                attempt_id,
+                previous.value,
+                new_state.value,
+                trigger.value,
+                reason,
+                _ts(now),
+            ),
+        )
+        return TransitionResult(target_id, attempt_id, previous, new_state, trigger, reason, now)
+
+    # --- polling --------------------------------------------------------------------------------
+
+    async def record_poll(
+        self,
+        target_id: str,
+        *,
+        snapshot: Snapshot,
+        seen: Snapshot,
+        changes: Sequence[Change],
+    ) -> TransitionResult | None:
+        """Save a successful poll; if it found changes, open the attempt in the same transaction.
+
+        Only a WATCHING target detects changes and moves its baseline (`seen`) forward. If the
+        target stopped watching during the poll (paused, say), its baseline is left alone, so the
+        changes are found again once it watches again.
+        Returns the CHANGE_DETECTED transition, or None.
+        """
+        for snap in (snapshot, seen):
+            if snap.target_id != target_id:
+                raise ValueError(f"snapshot is for {snap.target_id!r}, not {target_id!r}")
+        found = _check_changes(target_id, Trigger.CHANGE_DETECTED, changes) if changes else ()
+        return await self._run(self._record_poll, target_id, snapshot, seen, found)
+
+    def _record_poll(
+        self,
+        conn: sqlite3.Connection,
+        target_id: str,
+        snapshot: Snapshot,
+        seen: Snapshot,
+        changes: tuple[Change, ...],
+    ) -> TransitionResult | None:
+        now = _ts(self._clock.now())
+        with _write(conn):
+            row = conn.execute("SELECT state FROM targets WHERE id = ?", (target_id,)).fetchone()
             if row is None:
                 raise UnknownTarget(f"no target with id {target_id!r}")
-            mode = Target.model_validate_json(row["config_json"]).mode
-            previous = State(row["state"])
-            new_state = StateMachine.next_state(previous, trigger, mode)
-            now = self._clock.now()
-
-            if StateMachine.opens_attempt(trigger):
-                if change is None:  # fire() checks this; repeated for internal callers
-                    raise ValueError("change_detected needs a change")
-                attempt_id: str | None = self._new_attempt_id(target_id)
-                try:
-                    conn.execute(
-                        "INSERT INTO attempts (id, target_id, opened_at, change_json) "
-                        "VALUES (?, ?, ?, ?)",
-                        (attempt_id, target_id, _ts(now), _CHANGE.dump_json(change).decode()),
-                    )
-                except sqlite3.IntegrityError as exc:
-                    if "attempts.target_id" in str(exc):
-                        raise AttemptConflict(
-                            f"target {target_id!r} already has an open attempt"
-                        ) from exc
-                    raise StoreError(f"could not record the attempt: {exc}") from exc
-            else:
-                open_row = conn.execute(
-                    "SELECT id FROM attempts WHERE target_id = ? AND closed_at IS NULL",
-                    (target_id,),
-                ).fetchone()
-                attempt_id = open_row["id"] if open_row else None
-
-            if expires_at is not None:
-                if attempt_id is None:
-                    raise StoreError(f"target {target_id!r} holds seats but has no open attempt")
-                conn.execute(
-                    "UPDATE attempts SET expires_at = ? WHERE id = ?", (_ts(expires_at), attempt_id)
-                )
-            if attempt_id is not None and StateMachine.closes_attempt(new_state):
-                conn.execute(
-                    "UPDATE attempts SET closed_at = ?, outcome = ? WHERE id = ?",
-                    (_ts(now), _outcome(previous, trigger), attempt_id),
-                )
+            watching = State(row["state"]) is State.WATCHING
+            result = None
+            if watching and changes:
+                result = self._apply(conn, target_id, Trigger.CHANGE_DETECTED, None, changes, None)
+            previous = conn.execute(
+                "SELECT seen_json FROM watch WHERE target_id = ?", (target_id,)
+            ).fetchone()
+            seen_json = _snapshot_json(seen) if watching else (previous[0] if previous else None)
             conn.execute(
-                "UPDATE targets SET state = ?, updated_at = ? WHERE id = ?",
-                (new_state.value, _ts(now), target_id),
+                "INSERT INTO watch"
+                " (target_id, last_poll_at, last_success_at, snapshot_json, seen_json)"
+                " VALUES (?, ?, ?, ?, ?) ON CONFLICT(target_id) DO UPDATE SET"
+                " last_poll_at = excluded.last_poll_at,"
+                " last_success_at = excluded.last_success_at,"
+                " snapshot_json = excluded.snapshot_json,"
+                " seen_json = excluded.seen_json",
+                (target_id, now, now, _snapshot_json(snapshot), seen_json),
             )
-            conn.execute(
-                "INSERT INTO audit "
-                "(target_id, attempt_id, from_state, to_state, event, reason, at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    target_id,
-                    attempt_id,
-                    previous.value,
-                    new_state.value,
-                    trigger.value,
-                    reason,
-                    _ts(now),
-                ),
+        return result
+
+    async def record_poll_failure(self, target_id: str) -> None:
+        """Note that a poll was attempted and failed (for the heartbeat's "last poll")."""
+
+        def write(conn: sqlite3.Connection) -> None:
+            with _write(conn):
+                conn.execute(
+                    "INSERT INTO watch (target_id, last_poll_at) VALUES (?, ?) "
+                    "ON CONFLICT(target_id) DO UPDATE SET last_poll_at = excluded.last_poll_at",
+                    (target_id, _ts(self._clock.now())),
+                )
+
+        await self._run(write)
+
+    async def watch_state(self, target_id: str) -> WatchState:
+        def read(conn: sqlite3.Connection) -> WatchState:
+            row = conn.execute("SELECT * FROM watch WHERE target_id = ?", (target_id,)).fetchone()
+            if row is None:
+                return WatchState()
+            return WatchState(
+                last_poll_at=_opt_dt(row["last_poll_at"]),
+                last_success_at=_opt_dt(row["last_success_at"]),
+                snapshot=_snapshot(row["snapshot_json"]),
+                seen=_snapshot(row["seen_json"]),
             )
-        return TransitionResult(target_id, attempt_id, previous, new_state, trigger, reason, now)
+
+        return await self._run(read)
 
     # --- attempts and audit -------------------------------------------------------------------
 
@@ -516,7 +670,7 @@ class Store:
         running: list[Attempt] = []
 
         def fire(target_id: str, trigger: Trigger, reason: str) -> None:
-            transitions.append(self._fire(conn, target_id, trigger, reason, None, None))
+            transitions.append(self._fire(conn, target_id, trigger, reason, (), None))
 
         rows = conn.execute("SELECT id, state FROM targets ORDER BY rowid").fetchall()
         for target_id, raw_state in rows:

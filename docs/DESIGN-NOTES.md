@@ -15,7 +15,8 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 - **X2. Virtual time with several tasks.** "`sleep` advances time" is exact only when there is one sleeper.
   If two tasks sleep, the times add up instead of overlapping. → A single scheduler task owns all polling.
   That makes single-flight (T4.11) true by construction, and a global gate gives the 20 s spacing (T4.10).
-  If real concurrency is needed later, FakeClock becomes a wake-the-earliest-sleeper scheduler. `proposed`
+  If real concurrency is needed later, FakeClock becomes a wake-the-earliest-sleeper scheduler. `done`
+  (Phase 4: one WatchLoop task; the gate's lock is held while it sleeps, so only one task ever sleeps.)
 - **X3. Two processes.** `run` plus `canary`, or `run` plus `login`, would break C4 (each process has its own
   limiter) and fight over Chromium's profile lock. → A single-instance lock file for any command that
   touches the site or the profile. The last request time is persisted in `Store`, so the 20 s gate holds
@@ -118,25 +119,39 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 
 ## Phase 4 — watcher, scheduler, rate limiting
 
-- **P4.1** Diff on `show_id`, not on dataclass equality. Otherwise a price change looks like a new show. `proposed`
-- **P4.2 Flapping listings.** If a show or date vanishes for one poll (a partial response) and then
-  returns, diffing against only the last snapshot fires a second DATE_OPENED/SHOW_ADDED. That means a
-  duplicate alert or a second hold. → The watcher passes a "seen" baseline (the union of everything
-  seen) as `prev`. `diff()` stays pure and its signature is unchanged. `proposed`
-- **P4.3** If the next base-interval poll would land after a hot window starts, wake at the window
-  start instead. This saves up to 15 min of latency at 08:00. `proposed`
-- **P4.4** Jitter near the floor: with hot = 60 and ±20 %, clamping puts about half the samples at
-  exactly 60. That satisfies T4.6. `proposed`
-- **P4.5 Backoff scope.** A 429 means "this client is too fast", so back off *globally*. 5xx and
-  transient errors back off per target. **[ask]**
-- **P4.6 C4 versus the executor.** 1 request per 20 s cannot cover a click-through that is a dozen
-  page loads in a few seconds. → C4's numbers govern availability polls. While an executor session
-  runs, all polling is suspended, so only one site interaction happens at a time. **[ask]** (C4 wording)
-- **P4.7** Rewatch after EXPIRED or RELEASED must never re-trigger on shows already seen. Otherwise
-  ShowWatch re-holds seats in a loop, which looks like inventory hoarding. The baseline in P4.2 gives
-  this for free; add a test. `proposed`
-- **P4.8** T4.12 asserts "one attempt", so Phase 4 needs a thin hook into Store and StateMachine.
-  The full orchestrator stays in Phase 8. `proposed`
+- **P4.1** Diff on `show_id`, not on dataclass equality, so a price change is not a new show. `done`
+- **P4.2 Flapping listings.** The watcher diffs against `merge_seen()`, the union of everything seen,
+  not against the last poll alone. `diff()` stays pure and its signature is unchanged. `done`
+- **P4.3** If the next base-interval poll would land after a hot window starts, wake at the start
+  instead (no jitter on that wake, and none while backing off). `done`
+- **P4.4** Jitter near the floor clamps at 60 s (T4.6). `done`
+- **P4.5 Backoff scope.** A 429 doubles a *global* multiplier, and every scheduled target is pushed
+  back. Other failures back off only the failing target. A target uses the larger of the two
+  multipliers; each resets after 3 consecutive successes. `decided` (user: "continue")
+- **P4.6 C4 versus the executor.** C4's numbers govern availability polls. `PollGate.exclusive()`
+  lets a booking run hold the gate, so polling waits meanwhile. `decided` (user: "continue")
+- **P4.7** Rewatch never re-triggers on shows already seen: guaranteed by the P4.2 baseline. `done`
+- **P4.8 Detection is atomic with the poll.** `Store.record_poll()` saves the snapshot, moves the
+  baseline forward and opens the attempt in one transaction. A crash can neither lose a detection
+  nor duplicate one. `done`
+- **P4.9 "Already open" notice.** T4.1 makes the first snapshot a baseline, so a target added after
+  booking opened would wait in silence forever. → The first poll sends a one-off `ALREADY_OPEN`
+  event. It is not a detection: no attempt and no state change. `done` (flagged in the Phase 4 report)
+- **P4.10 One poll can open several dates** (a whole weekend). → An attempt carries *every* change
+  from its poll (`Attempt.changes`). Migration 2 converts stored single-change rows instead of
+  editing migration 1. `done`
+- **P4.11 Only relevant changes count.** The watcher diffs `relevant_view()`: the target's dates
+  and shows `rank_shows` accepts. A new show at a cinema you didn't list is logged, not alerted. `done`
+- **P4.12 Only WATCHING targets are polled.** During DETECTED/SELECTING/HELD/AWAITING_PAYMENT the
+  target is being acted on, so it isn't polled. Shows that open meanwhile are found on the first
+  poll after it returns to WATCHING, because they are not in the baseline. `done`
+- **P4.13 A target paused mid-poll keeps its baseline**, so the changes that poll saw are found
+  again after resume rather than absorbed silently. `done`
+- **P4.14 Backoff state lives in memory**, so a restart while rate limited starts at normal speed.
+  → Revisit with X3 in Phase 8: persist the global backoff level and the last request time. `proposed`
+- **P4.15 Poll failures are reported once per streak** (at the 5th in a row), never repeatedly. An
+  unexpected exception from an adapter is logged at ERROR and counted as a failure: the loop
+  survives anything except cancellation. `done`
 
 ## Phase 5 — notifier and logging (C7)
 
