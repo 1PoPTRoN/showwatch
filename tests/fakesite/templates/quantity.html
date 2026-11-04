@@ -1,0 +1,10 @@
+<h1>$movie</h1>
+<p>$show_line</p>
+<dialog open aria-label="How many seats?">
+  <form method="get" action="/show/$show_id/seats">
+    <label>Number of seats
+      <select name="qty">$options</select>
+    </label>
+    <button type="submit">$select_label</button>
+  </form>
+</dialog>

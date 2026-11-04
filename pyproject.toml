@@ -74,6 +74,8 @@ markers = [
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 xfail_strict = true
+# pytest-timeout: a hung server, browser or event loop fails one test instead of the suite.
+timeout = 60
 # Warnings are errors: catches "coroutine was never awaited" and similar async bugs early.
 filterwarnings = ["error"]
 
@@ -84,6 +86,7 @@ dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "pytest-socket>=0.8.1",
+    "pytest-timeout>=2.4.0",
     "respx>=0.23.1",
     "ruff>=0.17.3",
     "starlette>=1.10.0",

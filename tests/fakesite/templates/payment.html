@@ -1,0 +1,7 @@
+<h1>Payment</h1>
+<p>Total ₹$total for seats $seats</p>
+<form method="post" action="/pay">
+  <input type="hidden" name="hold_id" value="$hold_id">
+  <label>UPI ID <input name="upi" autocomplete="off"></label>
+  <button type="submit">$pay_label</button>
+</form>

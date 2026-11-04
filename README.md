@@ -4,10 +4,9 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 5 of 10 done).** The config file, show and seat choice, the
-> crash-safe store, the polite polling loop and notifications (Telegram or console) are in place, all
-> tested against simulated services. Nothing talks to a real website yet, and the CLI commands are
-> placeholders.
+> **Status: early development (Phase 6 of 10 done).** The config file, show and seat choice, the
+> crash-safe store, the polite polling loop, notifications, and a local fake cinema site for testing
+> are in place. Nothing talks to a real website yet, and the CLI commands are placeholders.
 
 ## Why
 
@@ -145,7 +144,7 @@ check passes.
 | 3 | Storage (SQLite) and the booking state machine | Done |
 | 4 | Watcher, scheduler and rate limiting | Done |
 | 5 | Notifications (Telegram, console) | Done |
-| 6 | Local fake cinema site for testing | Planned |
+| 6 | Local fake cinema site for testing | Done |
 | 7 | Browser executor (stops at the order summary) | Planned |
 | 8 | Orchestrator and the full CLI | Planned |
 | 9 | Optional LLM helpers (plain-language targets, locator repair) | Planned |
@@ -158,8 +157,9 @@ You need [uv](https://docs.astral.sh/uv/), which fetches Python 3.12 for you, an
 ```sh
 git clone https://github.com/1PoPTRoN/showwatch.git
 cd showwatch
-make sync               # create .venv from uv.lock
-make check              # lint, format check, type checks and the full test suite
+make sync                                  # create .venv from uv.lock
+uv run --locked playwright install chromium   # once: the browser for the end-to-end tests
+make check                                 # lint, format check, type checks and the full test suite
 uv run showwatch --help
 ```
 
@@ -167,13 +167,14 @@ uv run showwatch --help
 |---|---|
 | `make check` | ruff lint, ruff format check, `mypy --strict`, then all tests. Must be green. |
 | `make test` | Tests only |
-| `make e2e` | Browser end-to-end tests only (from Phase 6) |
-| `make fakesite` | Run the local fake site to explore by hand (from Phase 6) |
+| `make e2e` | Browser end-to-end tests only |
+| `make fakesite` | Run FakeShow, the local fake cinema site, to explore in your browser |
 | `make fmt` | Auto-format and apply safe lint fixes |
 
 **Tests never touch the internet.** During tests the Python process can only connect to
 `127.0.0.1`/`::1`, DNS lookups of real hostnames are blocked, and no test can switch this off.
-Browser tests (from Phase 6) run against a local fake site.
+Browser tests run against **FakeShow**, a plain, unbranded fake cinema site that runs locally on
+`127.0.0.1`. The test browser aborts every request to any other host.
 
 ### CLI
 
@@ -194,11 +195,12 @@ src/showwatch/
   ratelimit.py      the global request gate (20 s spacing, one at a time) and backoff
   notify/           message templates, Telegram and console notifiers, dedup, heartbeat
   logging.py        JSON-lines logs with secret redaction
-  adapters/         the site interface (implementations arrive in Phase 6)
+  adapters/         site interfaces; fake.py talks to FakeShow (the real-site adapter is Phase 10)
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py
 examples/           targets.example.yaml, the annotated starting point
-tests/unit/         pure-logic tests        tests/integration/  store tests on real SQLite files
+tests/unit/         pure-logic tests        tests/integration/  SQLite, HTTP and fake-site tests
+tests/e2e/          browser tests           tests/fakesite/     FakeShow, the local fake cinema site
 tests/support/      test helpers (FakeClock, network lockdown, seat maps, targets)
 docs/SPEC.md        the full build specification (source of truth)
 docs/DESIGN-NOTES.md  risks, open questions and proposed resolutions

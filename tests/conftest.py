@@ -5,11 +5,10 @@
 * Layers: each test is marked unit / integration / e2e from its folder, so `-m` selects reliably.
 * `fake_clock`: virtual time (tests/support/clock.py).
 * `store`: a fresh SQLite store in a temp dir, on `fake_clock`.
-
-Later phases add the fake-site fixtures here.
+* `fakesite`: the local fake site (one subprocess per session), reset before each test.
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
@@ -17,6 +16,7 @@ import pytest
 from showwatch.store import Store
 from tests.support import network
 from tests.support.clock import FakeClock
+from tests.support.fakesite import FakeSite, run_fakesite
 
 TESTS_ROOT = Path(__file__).resolve().parent
 LAYERS = ("unit", "integration", "e2e")
@@ -75,3 +75,15 @@ async def store(tmp_path: Path, fake_clock: FakeClock) -> AsyncIterator[Store]:
         yield db
     finally:
         await db.close()
+
+
+@pytest.fixture(scope="session")
+def fakesite_server() -> Iterator[FakeSite]:
+    with run_fakesite() as site:
+        yield site
+
+
+@pytest.fixture
+def fakesite(fakesite_server: FakeSite) -> FakeSite:
+    fakesite_server.reset()
+    return fakesite_server

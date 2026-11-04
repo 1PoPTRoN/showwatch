@@ -22,7 +22,8 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
   touches the site or the profile. The last request time is persisted in `Store`, so the 20 s gate holds
   across processes. `proposed`
 - **X4. Tooling gaps.** §9/§11 ask for coverage numbers, but no coverage tool is in §4. Hanging async
-  or e2e tests are best caught by a per-test timeout. → Add `pytest-cov` and `pytest-timeout` (dev only). **[ask]**
+  or e2e tests are best caught by a per-test timeout. → `pytest-timeout` added (60 s per test).
+  `decided` (user: "continue", Phase 6)
   Meanwhile, coverage is measured with a throwaway tool that changes no project files:
   `uv run --locked --with coverage coverage run --branch --source=src/showwatch -m pytest`.
 - **X5. Warnings are errors** in pytest, so "coroutine was never awaited" and similar async bugs fail
@@ -179,10 +180,25 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 
 ## Phases 6–7 — fake site and executor
 
-- **P6.1** Playwright needs a one-off Chromium download (about 150 MB) from Playwright's CDN. I will ask
-  before running it. **[ask]** (at Phase 6)
-- **P6.2** An optional third lockdown layer in the test fixture: Chromium `--host-resolver-rules`, so
-  that no hostname except loopback resolves. `proposed`
+- **P6.1** Playwright's Chromium (Chrome for Testing 156 + headless shell) was downloaded once from
+  Playwright's CDN. `done` (user: "continue")
+- **P6.2 Browser lockdown, two layers.** `context.route("**/*")` aborts any request whose host is not
+  127.0.0.1 (T6.8 proves it with an IP literal, which only the route guard can stop). Chromium's
+  `--host-resolver-rules` is the backstop for hostnames. The backstop is not tested on its own,
+  because that test would risk a real DNS query if the backstop were ever broken. `done`
+- **P6.4 One availability check = one HTTP request.** C4 spaces *requests*. FakeShow's listing page
+  carries every open date, so the adapter makes exactly one request (tested). The real-site adapter
+  (Phase 10) must do the same, or put each extra request through the gate. `done` (fake)
+- **P6.5 Provable clean shutdown.** uvicorn re-raises SIGTERM after a graceful stop, so its exit code
+  cannot tell graceful from killed. → `POST /__control/shutdown` stops it with exit code 0. The
+  fixture falls back to SIGTERM, then SIGKILL. `done`
+- **P6.6** FakeShow has no scripts: every seat click is a form POST, so "no seat-select requests"
+  (T7.10) can be checked from the request log. Form bodies are parsed by hand, because Starlette's
+  parser needs python-multipart, which is not a dependency. Templates use stdlib `string.Template`
+  (jinja2 is not a dependency either). `done`
+- **P6.7 Seat labels are not columns.** FakeShow numbers seats the way real sites do, counting only
+  real seats (the cell after a gap in `AA_AA` is A3). That keeps the executor honest about
+  `start_col` (P2.2). `done`
 - **P6.3** A Chromium profile is single-process. The executor keeps one warm persistent context, and
   `login` refuses to run while `run` holds the lock (see X3). `proposed`
 - **P7.1** T7.5 "no requests after the interstitial" is asserted from the server request log. Fake

@@ -1,0 +1,15 @@
+<h1>Choose $qty seats</h1>
+<p>$show_line</p>
+$notice
+<form id="select" method="post" action="/show/$show_id/select">
+  <input type="hidden" name="qty" value="$qty">
+  <input type="hidden" name="selected" value="$selected">
+</form>
+<div role="grid" aria-label="Seat map">
+$rows
+</div>
+<form id="proceed" method="post" action="/show/$show_id/hold">
+  <input type="hidden" name="qty" value="$qty">
+  <input type="hidden" name="selected" value="$selected">
+  <button type="submit"$disabled>$proceed_label</button>
+</form>

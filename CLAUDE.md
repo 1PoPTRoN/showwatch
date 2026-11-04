@@ -32,7 +32,7 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 ## Stack (§4)
 - Python 3.12, `uv` (env + lockfile), src layout, package `showwatch`.
 - Runtime: playwright, httpx, pydantic>=2, pyyaml, typer, python-dotenv (+ anthropic in Phase 9).
-- Dev: pytest, pytest-asyncio, respx, hypothesis, pytest-socket, ruff, mypy, types-PyYAML, starlette, uvicorn.
+- Dev: pytest(-asyncio,-socket,-timeout), respx, hypothesis, ruff, mypy, types-PyYAML, starlette, uvicorn.
 - Storage: stdlib sqlite3 (WAL) behind `Store`, numbered migrations. Scheduling: own asyncio loop on `Clock`.
 
 ## Conventions (§5)
@@ -56,5 +56,5 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 
 ## Commands (§6)
 - `make check`: ruff check, ruff format --check, mypy --strict src, mypy tests, pytest -q (all markers). Must be green.
-- `make test`, `make e2e` (pytest -m e2e), `make fakesite` (Phase 6+), `make fmt` (format + safe fixes).
+- `make test`, `make e2e`, `make fakesite` (FakeShow on 127.0.0.1), `make fmt`. Browser: `playwright install chromium`.
 - CLI: `uv run showwatch --help` (login, add, list, status, run, pause, resume, done, cancel, heartbeat, canary, parse).
