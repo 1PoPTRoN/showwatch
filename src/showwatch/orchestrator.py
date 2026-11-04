@@ -56,13 +56,14 @@ class Orchestrator:
         step_timeout_ms: int = 10_000,
         on_step: StepHook | None = None,
         healer: Healer | None = None,
+        gate: PollGate | None = None,  # shared with an adapter that paces extra requests
     ) -> None:
         self._settings = settings
         self._store = store
         self._notifier = notifier
         self._clock = clock
         self._tz = settings.tz
-        self.gate = PollGate(clock)
+        self.gate = gate or PollGate(clock)
         self._executor = Executor(
             store=store,
             adapter=adapter,

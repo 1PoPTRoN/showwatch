@@ -569,3 +569,44 @@ def test_settings_are_immutable(fake_clock: FakeClock) -> None:
     t = parse_settings(valid_raw(), clock=fake_clock).targets[0]
     with pytest.raises(ValidationError):
         t.seats = 9  # type: ignore[misc]
+
+
+# --- Phase 10: where to look for a target's shows on the real site ---------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://cinema.example.test/buytickets/test-movie/ET001/{date:%Y%m%d}",
+        "https://cinema.example.test/movie/shows?date={date}",
+        "http://127.0.0.1:8000/movie/shows?date={date:%Y-%m-%d}&lang=hi",
+    ],
+)
+def test_listing_url_accepts_a_date_placeholder(url: str, fake_clock: FakeClock) -> None:
+    raw = valid_raw()
+    target(raw)["listing_url"] = url
+    assert parse_settings(raw, clock=fake_clock).targets[0].listing_url == url
+
+
+def test_listing_url_is_optional(fake_clock: FakeClock) -> None:
+    assert parse_settings(valid_raw(), clock=fake_clock).targets[0].listing_url is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("https://cinema.example.test/movie/shows", id="no-date"),
+        pytest.param("https://cinema.example.test/{city}/{date}", id="other-field"),
+        pytest.param("https://cinema.example.test/{date!r}", id="conversion"),
+        pytest.param("https://cinema.example.test/{date:%Q}x{", id="broken-braces"),
+        pytest.param("ftp://cinema.example.test/{date}", id="not-http"),
+        pytest.param("/movie/shows/{date}", id="no-host"),
+    ],
+)
+def test_listing_url_must_be_web_address_with_the_date(url: str, fake_clock: FakeClock) -> None:
+    raw = valid_raw()
+    target(raw)["listing_url"] = url
+    text = error_text(raw, fake_clock)
+    assert "targets[0] (movie-fri).listing_url" in text
+    assert "{date" in text  # the message shows how to write it
+    assert "cinema.example.test" not in text  # but never echoes the input (C7)

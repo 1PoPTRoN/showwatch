@@ -19,11 +19,13 @@ import asyncio
 import difflib
 import inspect
 import re
+import string
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, time
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self, get_args
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
@@ -294,6 +296,19 @@ class Target(_Model):
     preferred_rows: tuple[RowLabel, ...] = ()
     avoid_rows: tuple[RowLabel, ...] = ()
     max_price_per_seat: StrictInt  # rupees
+    # Real site only (Phase 10): the target's listing page for one date, with `{date}` (or
+    # `{date:%Y%m%d}`, any strftime format) where the date goes. FakeShow does not need it.
+    listing_url: str | None = None
+
+    @field_validator("listing_url")
+    @classmethod
+    def _listing_url(cls, value: str | None) -> str | None:
+        if value is not None:
+            try:
+                render_listing_url(value, date(2026, 1, 31))
+            except ValueError:
+                raise _fail("listing_url", _LISTING_URL_HELP) from None
+        return value
 
     @field_validator("id")
     @classmethod
@@ -360,6 +375,38 @@ class Target(_Model):
         if both:
             raise _fail("rows_overlap", f"row {both[0]!r} is in both preferred_rows and avoid_rows")
         return self
+
+
+_LISTING_URL_HELP = (
+    "listing_url must be the http(s) address of the movie's listing page for one date, with "
+    "{date} where the date goes (or {date:%Y%m%d} for another date format)"
+)
+
+
+def render_listing_url(template: str, day: date) -> tuple[str, str]:
+    """`template` filled in with `day`, and the date as written in it (to spot a redirect).
+
+    ValueError if the template is not an http(s) URL with at least one `{date}` field and no
+    other fields. The date token is the first field's text.
+    """
+    tokens: list[str] = []
+    parts: list[str] = []
+    for literal, name, spec, conversion in string.Formatter().parse(template):
+        parts.append(literal)
+        if name is None:
+            continue
+        if name != "date" or conversion is not None:
+            raise ValueError("only {date} may be filled in")
+        token = format(day, spec or "")
+        if not token or "{" in (spec or ""):
+            raise ValueError("bad date format")
+        tokens.append(token)
+        parts.append(token)
+    url = "".join(parts)
+    where = urlsplit(url)
+    if not tokens or where.scheme not in ("http", "https") or not where.hostname:
+        raise ValueError("not an http(s) URL with {date}")
+    return url, tokens[0]
 
 
 class LlmSettings(_Model):
@@ -546,27 +593,30 @@ def _raw_target_id(raw: Mapping[Any, Any], index: int) -> str | None:
     return None
 
 
-def _describe(error: ErrorDetails, raw: Mapping[Any, Any]) -> str:
+def _describe(
+    error: ErrorDetails, raw: Mapping[Any, Any], root: type[BaseModel] | None = None
+) -> str:
+    """One line per problem. `root` is the model the locations start from (default Settings)."""
     loc: Loc = tuple(error["loc"])
     where = _label(loc, raw)
     if error["type"] == "extra_forbidden":
-        hint = _suggest(loc[:-1], str(loc[-1]))
+        hint = _suggest(loc[:-1], str(loc[-1]), root or Settings)
         return f"{where}: unknown key" + (f" (did you mean {hint!r}?)" if hint else "")
     if error["type"] == "missing":
         return f"{where}: required key is missing"
     return f"{where}: {error['msg']}"
 
 
-def _suggest(parent: Loc, key: str) -> str | None:
-    model = _model_at(parent)
+def _suggest(parent: Loc, key: str, root: type[BaseModel]) -> str | None:
+    model = _model_at(parent, root)
     if model is None:
         return None
     matches = difflib.get_close_matches(key, list(model.model_fields), n=1, cutoff=0.6)
     return matches[0] if matches else None
 
 
-def _model_at(loc: Loc) -> type[BaseModel] | None:
-    model: type[BaseModel] = Settings
+def _model_at(loc: Loc, root: type[BaseModel]) -> type[BaseModel] | None:
+    model: type[BaseModel] = root
     for item in loc:
         if isinstance(item, int):
             continue

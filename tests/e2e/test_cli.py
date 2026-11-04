@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 import respx
+from typer import Exit
 from typer.testing import CliRunner, Result
 
 from showwatch import cli
@@ -196,7 +197,9 @@ def test_t8_6_real_site_commands_say_what_is_missing(sw: Callable[..., Result], 
     for command in ("run", "canary", "login"):
         result = sw(command)
         assert result.exit_code == 1
-        assert "--fakeshow" in result.output  # until the real-site adapter exists (Phase 10)
+        assert "--fakeshow" in result.output  # the local test site is still offered
+        assert "calibration/bms-locators.yaml" in result.output  # Phase 10: what is missing
+        assert "scripts/calibrate.py" in result.output  # and how to make it
 
 
 TOKEN = "1234567890:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw"
@@ -303,3 +306,147 @@ def test_t9_2_parse_refuses_an_invalid_answer_and_saves_nothing(
     assert result.exit_code == 1
     assert "seats must be between 1 and 10" in result.output
     assert "No targets" in sw("list").output
+
+
+# --- Phase 10: the real-site adapter, driven by a calibration file -----------------------------
+
+
+def calibrated_targets_yaml(day: date, base_url: str, *, mode: str = "notify-only") -> str:
+    url = f"{base_url}/movie/shows?date={{date:%Y-%m-%d}}"
+    return targets_yaml(day).replace(
+        "    seats: 2\n", f'    seats: 2\n    mode: {mode}\n    listing_url: "{url}"\n'
+    )
+
+
+def write_calibration(base_url: str, path: Path = Path("calibration/bms-locators.yaml")) -> Path:
+    from tests.support.calibration import TEMPLATE
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(TEMPLATE.read_text().replace("{base}", base_url))
+    return path
+
+
+def test_t10_run_canary_and_login_use_the_calibration(
+    sw: Callable[..., Result], soon: date, fakesite: FakeSite, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_calibration(fakesite.base_url)  # the default place, in the working directory
+    Path("good.yaml").write_text(calibrated_targets_yaml(soon, fakesite.base_url))
+    assert sw("add", "good.yaml").exit_code == 0
+    fakesite.set(booking_open=True, shows=[{**SHOW, "date": soon.isoformat()}])
+
+    run = sw("run", "--max-polls", "1")
+    assert run.exit_code == 0, run.output
+    assert [(e["path"], e["query"]) for e in fakesite.log()] == [
+        ("/movie/shows", f"date={soon.isoformat()}")
+    ]
+    assert "last checked" in sw("status", "t1").output
+
+    canary = sw("canary")
+    assert canary.exit_code == 0, canary.output
+    assert "passed" in canary.output
+
+    logins: list[str] = []
+
+    async def fake_login(profile_dir: Path, url: str) -> None:
+        logins.append(url)
+
+    monkeypatch.setattr(cli, "interactive_login", fake_login)
+    login = sw("login")
+    assert login.exit_code == 0, login.output
+    assert logins == [f"{fakesite.base_url}/login"]
+
+
+def test_t10_the_calibration_file_can_live_elsewhere(
+    sw: Callable[..., Result], soon: date, fakesite: FakeSite, tmp_path: Path
+) -> None:
+    elsewhere = write_calibration(fakesite.base_url, tmp_path / "site.yaml")
+    Path("good.yaml").write_text(calibrated_targets_yaml(soon, fakesite.base_url))
+    assert sw("add", "good.yaml").exit_code == 0
+    run = sw("run", "--calibration", str(elsewhere), "--max-polls", "1")
+    assert run.exit_code == 0, run.output
+
+
+def test_t10_run_refuses_targets_it_cannot_watch(
+    sw: Callable[..., Result], soon: date, fakesite: FakeSite
+) -> None:
+    write_calibration(fakesite.base_url)
+    Path("good.yaml").write_text(targets_yaml(soon))  # no listing_url
+    assert sw("add", "good.yaml").exit_code == 0
+    run = sw("run", "--max-polls", "1")
+    assert run.exit_code == 1
+    assert "t1" in run.output
+    assert "listing_url" in run.output
+    assert fakesite.log() == []
+
+    assert sw("remove", "t1").exit_code == 0
+    Path("other.yaml").write_text(calibrated_targets_yaml(soon, "http://203.0.113.10"))
+    assert sw("add", "other.yaml").exit_code == 0
+    run = sw("run", "--max-polls", "1")
+    assert run.exit_code == 1
+    assert "not on the calibrated site" in run.output
+
+
+def test_t10_a_broken_calibration_file_lists_its_problems(
+    sw: Callable[..., Result], soon: date, fakesite: FakeSite
+) -> None:
+    path = write_calibration(fakesite.base_url)
+    path.write_text(path.read_text().replace("  proceed_to_summary:", "  proceed_to_sumary:"))
+    for command in ("run", "canary", "login"):
+        result = sw(command)
+        assert result.exit_code == 1
+        assert "missing steps: proceed_to_summary" in result.output
+        assert "did you mean 'proceed_to_summary'" in result.output
+
+
+def test_t10_run_shares_one_request_gate_with_the_adapter(
+    sw: Callable[..., Result], soon: date, fakesite: FakeSite, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A target with two dates needs two listing pages in its first check; the second is paced
+    # through the same gate the watcher uses (C4). With two gates it could not be. Virtual time
+    # (starting now), so the 20 s pacing does not make the test wait 20 s.
+    from tests.support.clock import FakeClock
+
+    start = datetime.now(UTC)
+    monkeypatch.setattr(cli, "SystemClock", lambda: FakeClock(start))
+    write_calibration(fakesite.base_url)
+    later = soon + timedelta(days=1)
+    yaml_text = calibrated_targets_yaml(soon, fakesite.base_url).replace(
+        f"dates: [{soon.isoformat()}]", f"dates: [{soon.isoformat()}, {later.isoformat()}]"
+    )
+    Path("two.yaml").write_text(yaml_text)
+    assert sw("add", "two.yaml").exit_code == 0
+    fakesite.set(booking_open=True, shows=[{**SHOW, "date": soon.isoformat()}])
+    run = sw("run", "--max-polls", "1")
+    assert run.exit_code == 0, run.output
+    assert [e["query"] for e in fakesite.log()] == [
+        f"date={soon.isoformat()}",
+        f"date={later.isoformat()}",
+    ]
+
+
+def test_t10_canary_says_when_the_listing_cannot_be_read(
+    sw: Callable[..., Result], soon: date, fakesite: FakeSite
+) -> None:
+    write_calibration(fakesite.base_url)
+    Path("good.yaml").write_text(calibrated_targets_yaml(soon, fakesite.base_url))
+    assert sw("add", "good.yaml").exit_code == 0
+    fakesite.set(booking_open=True, shows=[{**SHOW, "date": soon.isoformat()}], status_code=503)
+    canary = sw("canary")
+    assert canary.exit_code == 1
+    assert "Could not read the listing for t1: the site answered 503" in canary.output
+
+
+def test_t10_finished_targets_do_not_block_a_run() -> None:
+    # A BOOKED target is never checked again, so it needs no listing_url.
+    from showwatch.state import State
+    from showwatch.store import TargetRecord
+    from tests.support.calibration import fakeshow_calibration
+    from tests.support.targets import make_target
+
+    site = cli._Site(calibration=fakeshow_calibration("https://cinema.example.test"))
+    now = datetime.now(UTC)
+    booked = TargetRecord(make_target(id="old"), State.BOOKED, now, now)
+    site.check_targets([booked])  # no listing_url, but finished: accepted
+    watching = TargetRecord(make_target(id="new"), State.WATCHING, now, now)
+    with pytest.raises(Exit):
+        site.check_targets([booked, watching])

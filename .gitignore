@@ -227,7 +227,8 @@ __marimo__/
 profile/
 browser-profile/
 runs/
-# Calibration drafts are recorded from the live site and may hold account-specific URLs.
-calibration/*.draft.yaml
+# Site calibration (Phase 10): recorded from the live site; the draft and the confirmed file
+# are yours, not the repo's.
+/calibration/*.yaml
 # The user's real targets file (examples/targets.example.yaml is the committed template).
 /targets.yaml

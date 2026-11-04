@@ -36,12 +36,11 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 
 ## Conventions (§5)
 - `mypy --strict` passes on `src/`. All I/O is async. `matcher/` and `watcher/diff.py` are pure (no I/O, no clock).
-- Time only through `Clock`: `datetime.now(`, `utcnow(`, `today(`, `time.time(`, `time.sleep(` and
-  `asyncio.sleep(` are banned outside `clock.py` (enforced by tests/unit/test_architecture.py).
-- Inject every side effect: Clock, SiteAdapter / injected httpx client, Store.
-- C4/C5 numbers live only in `limits.py` (pinned by test_limits.py); import them, never repeat literals.
+- Time only through `Clock`: `now(`, `utcnow(`, `today(`, `time.time(`, `*.sleep(` banned outside `clock.py`.
+- Inject every side effect (Clock, SiteAdapter / httpx client, Store). C4/C5 numbers only in `limits.py`.
 - User config enters only via `config.parse_settings*` / `load_settings` (secret + past-date checks).
-- Every availability check goes through `PollGate.poll()`; every poll result through `Store.record_poll()`.
+- Availability checks: `PollGate.poll()` (extra page in one check: `pace()`); results: `Store.record_poll()`.
+  Real site = `adapters/bms.py` from the calibration only; blocked pages never retried in the browser (C3).
 - State changes only through `Store.fire()` (one transaction: state + attempt + audit). Never UPDATE
   `targets.state` directly. Schema changes = append a migration to `store.MIGRATIONS`, never edit one.
 - Store UTC; show users `Asia/Kolkata`. Artefacts: `~/.showwatch/runs/<attempt_id>/NN-<step>.png`.
@@ -55,6 +54,7 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
   The network lockdown (pytest-socket, `127.0.0.1`/`::1` only) is always on; never disable it.
 
 ## Commands (§6)
-- `make check`: ruff check, ruff format --check, mypy --strict src, mypy tests, pytest -q (all markers). Must be green.
+- `make check`: ruff, ruff format --check, mypy --strict src scripts, mypy tests, pytest -q. Must be green.
 - `make test`, `make e2e`, `make fakesite` (FakeShow on 127.0.0.1), `make fmt`. Browser: `playwright install chromium`.
-- CLI: `uv run showwatch --help` (§6 commands + `remove`). Data: `$SHOWWATCH_HOME` (default `~/.showwatch`).
+- CLI: `uv run showwatch --help` (§6 + `remove`); `run`/`login`/`canary` take `--fakeshow URL` or the
+  gitignored `calibration/bms-locators.yaml` (`scripts/calibrate.py`: the user runs it, never Claude).

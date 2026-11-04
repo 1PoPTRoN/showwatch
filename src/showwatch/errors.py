@@ -20,6 +20,16 @@ class ConfigError(Exception):
         super().__init__(header + ":\n" + "\n".join(f"  - {p}" for p in self.problems))
 
 
+class CalibrationError(ConfigError):
+    """The site calibration file (Phase 10) is incomplete or invalid; `problems` lists each."""
+
+    def __init__(self, problems: Sequence[str], source: str | None = None) -> None:
+        self.problems = list(problems)
+        self.source = source
+        header = f"Invalid calibration file ({source})" if source else "Invalid calibration file"
+        Exception.__init__(self, header + ":\n" + "\n".join(f"  - {p}" for p in self.problems))
+
+
 class IllegalTransition(Exception):
     """A trigger the state machine does not allow from the current state or mode (SPEC §3)."""
 

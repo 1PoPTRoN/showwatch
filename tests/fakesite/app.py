@@ -8,6 +8,7 @@ request log. Control traffic is not logged, because it is not site traffic.
 
 import asyncio
 from collections.abc import Awaitable, Callable
+from datetime import date
 from urllib.parse import parse_qs, urlencode
 
 from starlette.applications import Starlette
@@ -106,7 +107,19 @@ async def movie(request: Request) -> Response:
 
 
 async def listing(request: Request) -> Response:
-    return HTMLResponse(pages.listing_page(_state(request)))
+    # `?date=YYYY-MM-DD` lists one date, as real sites do (Phase 10); without it, every date.
+    state = _state(request)
+    raw = request.query_params.get("date")
+    if raw is None:
+        return HTMLResponse(pages.listing_page(state))
+    try:
+        day = date.fromisoformat(raw)
+    except ValueError:
+        return HTMLResponse(pages.message_page("error", "Not found", "No such date."), 404)
+    open_dates = state.open_dates()
+    if day not in open_dates and state.closed_date_redirect and open_dates:
+        return RedirectResponse(f"/movie/shows?date={open_dates[0].isoformat()}", status_code=302)
+    return HTMLResponse(pages.listing_page(state, only=day))
 
 
 def _show_or_404(request: Request) -> tuple[SiteState, FakeShow] | Response:

@@ -1,0 +1,45 @@
+# A calibration file describing FakeShow (tests/fakesite), used by the contract test (T10.2):
+# BmsAdapter, built only from this file, must drive FakeShow exactly as FakeSiteAdapter does.
+# `{base}` is replaced with the running FakeShow's URL.
+version: 1
+site:
+  base_url: "{base}"
+  login_path: /login
+
+steps:                       # the allow-listed booking steps (no payment step exists)
+  choose_quantity: { role: combobox, name: Number of seats }
+  select_seats: { role: button, name: Select seats, navigates: true }
+  seat: { test_id: "seat-{row}-{col}", navigates: true }
+  proceed_to_summary: { role: button, name_pattern: '^Pay ₹[\d,]+$', navigates: true }
+
+forbidden:                   # never clicked, whatever happens (C1)
+  continue_to_payment: { role: link, name: Continue to payment }
+  pay_now: { role: button, name: Pay now }
+
+listing:
+  ready_pattern: Choose a show          # present once the listing page has rendered
+  show:
+    role: link
+    # Prices can be written "1,250": the group allows commas, which are dropped when read.
+    name_pattern: '(?P<time>\d{1,2}:\d{2} [AP]M) · (?P<format>.+?) · from ₹(?P<price>[\d,]+)'
+    id_pattern: '/show/(?P<id>[^/?#]+)'
+  venue: { role: heading, level: 4 }
+
+seat_map:
+  container: { role: grid, name: Seat map }
+  row_attribute: data-row
+  col_attribute: data-col
+  gap_attribute: data-gap
+  taken_attributes: [disabled, data-taken]
+
+hold_timer: { test_id: hold-timer }
+
+pages:
+  summary: { url_patterns: ['^/summary/'] }
+  payment: { url_patterns: ['^/payment/'], title_patterns: ['^Payment'] }
+
+interstitials:
+  captcha: { title_patterns: ['Verify you are human'] }
+  queue: { title_patterns: ['You are in the queue'] }
+  login: { title_patterns: ['^Sign in'] }
+  forbidden: { title_patterns: ['^Access denied'] }

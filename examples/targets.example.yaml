@@ -32,3 +32,7 @@ targets:                      # at most 3 (C5)
     preferred_rows: [H, J, K]             # best first
     avoid_rows: [A, B, C]
     max_price_per_seat: 600               # rupees
+    # Real site only: this movie's listing page for one date, with {date} where the date goes
+    # (or a format, e.g. {date:%Y%m%d}). Copy it from your browser; see README, "Targets on the
+    # real site". Not needed with --fakeshow.
+    # listing_url: "https://<the site>/<this movie's listing path>/{date:%Y%m%d}"

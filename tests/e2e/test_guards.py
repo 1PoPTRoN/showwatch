@@ -2,6 +2,8 @@
 
 `safe_click` refuses on the payment page and on any forbidden locator, *before* touching the
 page. FakeShow's request log proves no request followed.
+
+T10.2: each test runs with FakeSiteAdapter and with BmsAdapter built from the FakeShow calibration.
 """
 
 import re
@@ -10,11 +12,15 @@ from collections.abc import AsyncIterator
 import httpx
 import pytest
 
+from showwatch.adapters.base import SiteAdapter
+from showwatch.adapters.bms import BmsAdapter
 from showwatch.adapters.fake import FakeSiteAdapter
 from showwatch.errors import PaymentBoundaryError
 from showwatch.executor.executor import Step
 from showwatch.executor.guards import safe_click
+from showwatch.ratelimit import PollGate
 from tests.support.browser import BrowserSession
+from tests.support.calibration import fakeshow_calibration
 from tests.support.clock import FakeClock
 from tests.support.fakesite import FakeSite
 
@@ -34,15 +40,34 @@ def make_hold(site: FakeSite) -> str:
     return match[1]
 
 
-@pytest.fixture
-async def adapter(fakesite: FakeSite, fake_clock: FakeClock) -> AsyncIterator[FakeSiteAdapter]:
+@pytest.fixture(
+    params=[
+        pytest.param("fakeshow", id="fakeshow"),
+        pytest.param("calibrated", id="t10_2-calibrated"),
+    ]
+)
+async def adapter(
+    request: pytest.FixtureRequest,
+    fakesite: FakeSite,
+    fake_clock: FakeClock,
+    browser: BrowserSession,
+) -> AsyncIterator[SiteAdapter]:
     fakesite.set(booking_open=True, shows=[SHOW])
     async with httpx.AsyncClient() as client:
-        yield FakeSiteAdapter(fakesite.base_url, client=client, clock=fake_clock)
+        if request.param == "fakeshow":
+            yield FakeSiteAdapter(fakesite.base_url, client=client, clock=fake_clock)
+        else:
+            yield BmsAdapter(
+                fakeshow_calibration(fakesite.base_url),
+                client=client,
+                clock=fake_clock,
+                gate=PollGate(fake_clock),
+                open_page=browser.context.new_page,
+            )
 
 
 async def test_t7_3_no_click_is_allowed_on_the_payment_page(
-    browser: BrowserSession, fakesite: FakeSite, adapter: FakeSiteAdapter
+    browser: BrowserSession, fakesite: FakeSite, adapter: SiteAdapter
 ) -> None:
     hold = make_hold(fakesite)
     page = await browser.context.new_page()
@@ -57,7 +82,7 @@ async def test_t7_3_no_click_is_allowed_on_the_payment_page(
 
 
 async def test_t7_3_forbidden_locators_are_refused_anywhere(
-    browser: BrowserSession, fakesite: FakeSite, adapter: FakeSiteAdapter
+    browser: BrowserSession, fakesite: FakeSite, adapter: SiteAdapter
 ) -> None:
     hold = make_hold(fakesite)
     page = await browser.context.new_page()

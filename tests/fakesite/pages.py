@@ -1,8 +1,11 @@
-"""HTML for the fake site: `string.Template` files plus escaped fragments. No scripts, no assets.
+"""HTML for the fake site: `string.Template` files plus escaped fragments. No assets.
 
-Every dynamic value is escaped here before it reaches a template.
+Every dynamic value is escaped here before it reaches a template. The only script is the
+listing's in `listing_render="script"` mode, which puts the server's own (escaped) listing HTML
+on the page, so the shows exist only once a browser runs it (Phase 10).
 """
 
+import json
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
@@ -56,9 +59,11 @@ def movie_page(state: SiteState) -> str:
     )
 
 
-def listing_page(state: SiteState) -> str:
+def listing_page(state: SiteState, only: date | None = None) -> str:
     sections = []
     for day in state.open_dates():
+        if only is not None and day != only:
+            continue
         venues: dict[str, list[FakeShow]] = {}
         for show in sorted(
             (s for s in state.shows if s.on == day), key=lambda s: (s.at, s.show_id)
@@ -83,12 +88,21 @@ def listing_page(state: SiteState) -> str:
             f"  <h3>{day_label(day)}</h3>\n" + "\n".join(blocks) + "\n</section>"
         )
     dates = "\n".join(sections) if sections else "<p>Coming soon</p>"
-    return page(
-        "listing",
-        state.movie,
-        {"data-page": "listing", "data-booking": "open" if state.booking_open else "soon"},
-        movie=escape(state.movie),
-        dates=dates,
+    content = _template("listing").substitute(movie=escape(state.movie), dates=dates)
+    if state.listing_render == "script":
+        content = _rendered_by_script(content)
+    attrs = {"data-page": "listing", "data-booking": "open" if state.booking_open else "soon"}
+    attr_text = " ".join(f'{k}="{escape(v)}"' for k, v in attrs.items())
+    return _template("base").substitute(title=escape(state.movie), attrs=attr_text, content=content)
+
+
+def _rendered_by_script(content: str) -> str:
+    # JSON with "<", ">" and "&" escaped, so nothing in it can close the script element early.
+    data = json.dumps(content).replace("<", "\\u003c").replace(">", "\\u003e")
+    data = data.replace("&", "\\u0026")
+    return (
+        '<div id="listing"></div>\n<script>\n'
+        f'document.getElementById("listing").innerHTML = {data};\n</script>'
     )
 
 

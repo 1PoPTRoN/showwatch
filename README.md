@@ -4,10 +4,11 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 9 of 10 done).** The whole tool works end to end, from the
-> command line, against a local fake cinema site (FakeShow), including the optional Claude helpers.
-> It doesn't talk to BookMyShow yet: the real-site adapter is Phase 10, and until then `run`, `login`
-> and `canary` need `--fakeshow URL`.
+> **Status: all 10 phases built; not yet tried on the real site.** Everything works end to end
+> against a local fake cinema site (FakeShow). To use it on BookMyShow you first record a
+> calibration in your own browser ([Using it on the real site](#using-it-on-the-real-site)), then
+> work through the manual checklist M10.1–M10.4. Nobody has run those yet: the code has only ever
+> talked to FakeShow.
 
 ## Why
 
@@ -28,6 +29,7 @@ Each watched movie (a *target*) runs in one of three modes. They are also the or
 ## Using it
 
 ```sh
+uv run python scripts/calibrate.py record --site <the site's address>   # once: see below
 cp examples/targets.example.yaml targets.yaml   # edit it: movie, dates, cinemas, seats, ...
 showwatch add targets.yaml        # validates the file, then saves its targets and settings
 showwatch login                   # once: log in yourself in the browser window that opens
@@ -48,9 +50,70 @@ showwatch run                     # watch until Ctrl+C (keep it running until yo
 | `login` | Open the browser so you can log in yourself |
 | `parse "<request>"` | Turn plain words into a target with Claude; you confirm before it is saved |
 
+`run`, `login` and `canary` use the site described by `calibration/bms-locators.yaml` (or
+`--calibration <file>`, or `$SHOWWATCH_CALIBRATION`). With `--fakeshow <url>` they use the local
+test site instead.
+
 Data lives in `~/.showwatch` (or `$SHOWWATCH_HOME`). Only one `run`, `login` or `canary` can run at
 a time. If ShowWatch is stopped mid-way, the next start recovers: an interrupted selection goes back
 to watching, and a hold that is still running gets its countdown re-sent.
+
+## Using it on the real site
+
+ShowWatch knows nothing about BookMyShow's pages until you show it. You record one booking in your
+own browser, and that recording becomes a **calibration file**: how to find each button, how the
+listing and the seat map read, and how to recognise the payment page. Everything the real-site
+adapter does comes from that file.
+
+**1. Record.** `uv run python scripts/calibrate.py record --site <the site's address>` opens your
+saved ShowWatch browser profile in a normal window. The terminal tells you what to do at each step:
+open a listing and click a show time, choose the number of seats, open the seat map, click a seat,
+go to the order summary, click the countdown, and click through to the payment page. **Do not pay.**
+The recorder only listens. It never clicks or types, and it never records text fields, button
+values, tokens or query strings. You confirm which page is the order summary and which is the payment page.
+
+**2. Check.** It writes `calibration/bms-locators.draft.yaml`, and the top of that file lists what is
+still missing. The recorder cannot know one thing: `listing.ready_pattern`, some text that is always
+on the listing page once it has loaded. Fill that in, read every entry against the site, then run
+`uv run python scripts/calibrate.py check calibration/bms-locators.draft.yaml`. When it passes, save
+the file as `calibration/bms-locators.yaml`. Calibration files are gitignored; keep yours to yourself.
+[tests/support/fakeshow-calibration.yaml](tests/support/fakeshow-calibration.yaml) is a complete,
+commented example (for FakeShow).
+
+**Targets on the real site.** Each target needs a `listing_url`: its movie's listing page for one
+date, with `{date}` where the date goes. For example, if the page for 18 December ends in `/20261218`,
+write `.../{date:%Y%m%d}`. The recorder prints the one for the movie you recorded. `showwatch run`
+refuses targets without one, or whose page is not on the calibrated site.
+
+**How availability is read.**
+
+- One page per date. The first check of a target reads each of its dates, waiting the usual 20
+  seconds between pages. After that, every check re-reads only the date read longest ago, so it is
+  still one request per check. Fewer dates per target means faster news for each date: with 2
+  dates and a 60-second interval, each date is looked at every 2 minutes.
+- A date whose page doesn't exist yet, or that redirects to a page without that date, counts as
+  **not open yet**. That is normal before booking opens.
+- It asks over plain HTTP first, with an honest `showwatch/<version>` user agent. If the page only
+  shows its listing with JavaScript, ShowWatch reads it in your saved browser from then on, at the
+  same pace.
+- A CAPTCHA, a queue or a block page is never retried in the browser. That would be getting
+  around it. The target pauses and you are told.
+- Any page that is not on the booking site counts as the payment page (payment gateways live
+  elsewhere), so ShowWatch stops there too.
+
+**The manual checklist (yours to run, in this order):**
+
+1. **M10.1 `notify-only`** on a real upcoming movie: an alert arrives when a date opens. Check the
+   alert's shows, venues and times against the site.
+2. **M10.2 `showwatch canary`** on a movie that is showing now: it passes, reads only, and reaches the
+   seat map and no further.
+3. **M10.3 `dry-run`**: the screenshot in `~/.showwatch/runs/` outlines sensible seats.
+4. **M10.4 `assist`** on a low-stakes show: it reaches the order summary and holds the seats. You pay
+   yourself, then run `showwatch done <attempt>`.
+
+If a step fails, the error names the calibration key or step at fault. Fix the file, run
+`calibrate.py check`, and repeat that step. The seat map is the part most likely to need work, since
+real seat maps vary the most (see docs/DESIGN-NOTES.md, Phase 10).
 
 ## Optional: help from Claude
 
@@ -211,7 +274,7 @@ check passes.
 | 7 | Browser executor (stops at the order summary) | Done |
 | 8 | Orchestrator and the full CLI | Done |
 | 9 | Optional LLM helpers (plain-language targets, locator repair) | Done |
-| 10 | Calibration tools for the live site (run by you) | Planned |
+| 10 | Calibration recorder and the real-site adapter (live checks M10.1–M10.4 are yours) | Done |
 
 ## Development
 
@@ -240,7 +303,8 @@ Browser tests run against **FakeShow**, a plain, unbranded fake cinema site that
 `127.0.0.1`. The test browser aborts every request to any other host.
 
 To try the whole flow locally, start FakeShow with `make fakesite`, then pass its URL:
-`showwatch run --fakeshow http://127.0.0.1:<port>`.
+`showwatch run --fakeshow http://127.0.0.1:<port>`. The real-site adapter is tested the same way:
+its contract test runs the whole browser suite against FakeShow through a calibration file.
 
 ## Project layout
 
@@ -255,7 +319,9 @@ src/showwatch/
   ratelimit.py      the global request gate (20 s spacing, one at a time) and backoff
   notify/           message templates, Telegram and console notifiers, dedup, heartbeat
   logging.py        JSON-lines logs with secret redaction
-  adapters/         site interfaces; fake.py talks to FakeShow (the real-site adapter is Phase 10)
+  adapters/         site interfaces: fake.py (FakeShow); bms.py, the real-site adapter, driven by
+                    calibration.py (the calibration file), listing.py and aria.py (reading pages)
+  recorder.py       the calibration recorder behind scripts/calibrate.py
   executor/         the browser run: guards.py (payment boundary), browser.py (saved profile)
   orchestrator.py   startup recovery, the poll loop, booking runs, hold expiry, heartbeat
   llm/              optional Claude helpers: intent parser, locator healer, the one API client
@@ -263,6 +329,7 @@ src/showwatch/
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py
 examples/           targets.example.yaml, the annotated starting point
+scripts/            calibrate.py: record and check the real site's calibration (run by you)
 tests/unit/         pure-logic tests        tests/integration/  SQLite, HTTP and fake-site tests
 tests/e2e/          browser tests           tests/fakesite/     FakeShow, the local fake cinema site
 tests/support/      test helpers (FakeClock, network lockdown, seat maps, targets)

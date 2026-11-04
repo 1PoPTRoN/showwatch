@@ -81,7 +81,9 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 - **P2.7 Venue names must match the site's names** (ignoring case and spacing). "PVR Orion" will not
   match "PVR: Orion Mall, Rajajinagar". → Revisit in Phase 10: calibration should list the exact
   venue names so they can be copied into targets.yaml, or matching gets an explicit alias list. Never
-  fuzzy-match silently. `proposed`
+  fuzzy-match silently. Phase 10: venue names are read exactly as the listing page writes them, and
+  a notify-only alert (M10.1) shows them, so they can be copied from there. The recorder does not
+  collect them, and there is no alias list yet. `open`
 - **P2.8** Row labels match case-insensitively. An avoided row is never chosen, even when it is also
   preferred (config forbids that overlap anyway). `done`
 
@@ -188,7 +190,8 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
   because that test would risk a real DNS query if the backstop were ever broken. `done`
 - **P6.4 One availability check = one HTTP request.** C4 spaces *requests*. FakeShow's listing page
   carries every open date, so the adapter makes exactly one request (tested). The real-site adapter
-  (Phase 10) must do the same, or put each extra request through the gate. `done` (fake)
+  (Phase 10) must do the same, or put each extra request through the gate. `done` (fake; the
+  real-site adapter paces extra pages through the gate, P10.3)
 - **P6.5 Provable clean shutdown.** uvicorn re-raises SIGTERM after a graceful stop, so its exit code
   cannot tell graceful from killed. → `POST /__control/shutdown` stops it with exit code 0. The
   fixture falls back to SIGTERM, then SIGKILL. `done`
@@ -276,5 +279,59 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 
 ## Phase 10 — live calibration
 
-- **P10.1** Calibration drafts may contain account-specific URLs, so `calibration/*.draft.yaml` is
-  gitignored. `done` (Phase 0)
+Nothing here has met the real site: Claude Code never contacts it (SPEC §0). Every decision is
+tested against FakeShow, and each `risk` item below is what the manual checks M10.1–M10.4 settle.
+
+- **P10.1** Calibration files are recorded from the live site, so `/calibration/*.yaml` (the draft
+  and the confirmed file) is gitignored. The recorder also keeps no query strings (except a date),
+  no `value` attributes (except a button's label), no token-like attributes, and never reports text
+  fields (C2, C7; tested). `done`
+- **P10.2 A block is never retried in the browser (C3).** §10 says to fall back to the browser "if
+  [the HTTP tier] is blocked or the page is JS-rendered". A 403, CAPTCHA or queue page would then be
+  retried by a client that might get through: that is evasion, and C3/C4 (§2) say pause. → Blocked
+  pages pause in either tier. The browser is used only for a normal page whose listing needs
+  JavaScript (`listing.ready_pattern` missing), and from then on for good. Built-in title checks
+  for CAPTCHA, queue and block pages always apply on top of the calibrated ones, so a page the user
+  never recorded still pauses. `decided` (stricter reading of §10; flagged in the Phase 10 report)
+- **P10.3 One page per date, complete snapshots.** Real listings are one page per date, and §7 says
+  a date absent from a snapshot is not open. Rotating one date per check would make a date first
+  read on the second check look newly opened: a false alert, or a false hold in assist mode. →
+  The first check of a target reads every date. Each extra page goes through the gate
+  (`PollGate.pace()`), so the 20 s global spacing holds, as P6.4 required. Later checks re-read only
+  the date read longest ago, returning the merged results. Steady state is one request per check;
+  each date is at most (dates × interval) old. A date dropped from a target is forgotten, so if it
+  comes back it is read again at once. `done`
+- **P10.4 Not open versus broken.** Before booking opens, a date's page may 404 or redirect. Treating
+  that as a failure would back off for up to an hour, just when the date might open. → A 404, or a
+  final URL without the requested date in it, means "not open". The cost: a `listing_url` with a
+  wrong path looks like "never open" rather than an error. That is why M10.1 checks an alert's
+  contents against the site, and why the recorder prints the template from a real listing URL.
+  `done`, `risk` (M10.1)
+- **P10.5 One reader for both tiers.** Shows are read from HTML by roles and accessible names (a
+  small, pure version of the browser's rules, `adapters/aria.py`). The browser tier feeds it the
+  rendered DOM, so the tiers cannot disagree. Where the simplified name rules differ from Chromium's,
+  a calibrated pattern may fail to match. That is loud, not silent: show links that fit no venue or
+  id pattern raise TransientError, and repeated failures alert (POLL_FAILING). `risk` (M10.1)
+- **P10.6 What only the user's site can answer.** `risk` for each, until M10.2–M10.4:
+  - *Seat map:* read by row and column attributes, with the seat locator built from the same values
+    (`seat-{row}-{col}`). A real seat map that numbers seats without position attributes needs a new
+    reading strategy, which is a code change. The canary (M10.2) shows whether it reads.
+  - *Seat count:* the executor chooses it with a dropdown (`safe_select`). A site with numbered
+    buttons instead needs a code change; the recorder stops and says so.
+  - *Show details:* a link that names no format or language takes the target's first format and its
+    language. With no price, `max_price_per_seat` can't be checked before the seat map; you still see
+    the price before paying. `calibrate.py check` lists which of these apply.
+  - *Late-night shows* listed under the previous date are stored under the date of the page they
+    appear on.
+- **P10.7 The payment boundary on the real site.** Besides `pages.payment`, any http(s) page off
+  the calibrated hosts (`site.base_url` plus `site.hosts`) counts as the payment page. A payment
+  gateway on another host therefore stops the executor even if the calibration missed it. T7.3 and
+  the whole Phase 7 suite run with both adapters (T10.2). `done`
+- **P10.8 Honest traffic.** HTTP requests carry `User-Agent: showwatch/<version>` and httpx's default
+  headers, nothing else (tested). The browser tier is your own headed profile, the same window
+  `showwatch login` uses. `done`
+- **P10.9 FakeShow grew real-site shapes:** per-date listings (`?date=`), a closed date redirecting to
+  the nearest open one, and a listing that only a script renders. This updates P6.6: that listing
+  script is FakeShow's only script, and seat clicks are still form POSTs. `done`
+- **P10.10 Price patterns allow thousands separators.** `^Pay ₹\d+$` would never match "Pay ₹1,250".
+  Recorded and example patterns use `[\d,]+`, and the listing reader drops the commas. `done`

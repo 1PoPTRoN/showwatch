@@ -2,6 +2,9 @@
 
 A real headless Chromium (allowed in tests only, C6) drives the local fake site. Every
 assertion about traffic comes from FakeShow's own request log.
+
+T10.2 (contract test): every test here runs twice, once with FakeSiteAdapter and once with
+BmsAdapter built only from tests/support/fakeshow-calibration.yaml. Adapters are interchangeable.
 """
 
 import time
@@ -13,6 +16,8 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
+from showwatch.adapters.base import SiteAdapter
+from showwatch.adapters.bms import BmsAdapter
 from showwatch.adapters.fake import FakeSiteAdapter
 from showwatch.errors import LocatorNotFound
 from showwatch.executor.executor import Executor, Outcome, Step
@@ -25,6 +30,7 @@ from showwatch.store import Store, TransitionResult
 from showwatch.watcher.diff import diff, relevant_view
 from tests.fakesite.state import DEFAULT_LAYOUT, parse_layout
 from tests.support.browser import BrowserSession
+from tests.support.calibration import fakeshow_calibration, listing_url
 from tests.support.clock import FakeClock
 from tests.support.fakesite import FakeSite
 from tests.support.notify import RecordingNotifier
@@ -77,15 +83,26 @@ class Rig:
         clock: FakeClock,
         client: httpx.AsyncClient,
         runs: Path,
+        adapter_kind: str,
         on_step: Callable[[Step], Awaitable[None]] | None = None,
         step_timeout_ms: int = 5_000,
     ) -> None:
         self.store = store
         self.site = fakesite
         self.notifier = RecordingNotifier()
-        self.adapter = FakeSiteAdapter(fakesite.base_url, client=client, clock=clock)
         self.runs = runs
         self.gate = PollGate(clock)
+        self.adapter: SiteAdapter
+        if adapter_kind == "fakeshow":
+            self.adapter = FakeSiteAdapter(fakesite.base_url, client=client, clock=clock)
+        else:
+            self.adapter = BmsAdapter(
+                fakeshow_calibration(fakesite.base_url),
+                client=client,
+                clock=clock,
+                gate=self.gate,
+                open_page=browser.context.new_page,
+            )
         self.executor = Executor(
             store=store,
             adapter=self.adapter,
@@ -100,7 +117,7 @@ class Rig:
         )
 
     async def detect(self, mode: str = "assist", target_id: str = "t1") -> TransitionResult:
-        target = make_target(id=target_id, mode=mode)
+        target = make_target(id=target_id, mode=mode, listing_url=listing_url(self.site.base_url))
         await self.store.add_target(target)
         await self.store.fire(target_id, Trigger.START)
         snapshot = await self.adapter.check_availability(target)
@@ -119,8 +136,14 @@ async def client() -> Any:
         yield http
 
 
-@pytest.fixture
+@pytest.fixture(
+    params=[
+        pytest.param("fakeshow", id="fakeshow"),
+        pytest.param("calibrated", id="t10_2-calibrated"),
+    ]
+)
 def rig_factory(
+    request: pytest.FixtureRequest,
     store: Store,
     fakesite: FakeSite,
     browser: BrowserSession,
@@ -138,6 +161,7 @@ def rig_factory(
             clock=fake_clock,
             client=client,
             runs=tmp_path / "runs",
+            adapter_kind=request.param,
             **options,
         )
 

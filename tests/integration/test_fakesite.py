@@ -328,3 +328,44 @@ async def test_a_page_that_says_coming_soon_never_yields_shows(
     respx.get("http://127.0.0.1:9/movie/shows").mock(return_value=httpx.Response(200, text=soon))
     adapter = FakeSiteAdapter("http://127.0.0.1:9", client=client, clock=fake_clock)
     assert dict((await adapter.check_availability(make_target())).open_dates) == {}
+
+
+# --- Phase 10: listing pages shaped like a real site's ------------------------------------------
+
+
+def listing_html(site: FakeSite, **params: str) -> httpx.Response:
+    return httpx.get(site.url("/movie/shows"), params=params)
+
+
+def test_a_date_parameter_lists_only_that_dates_shows(fakesite: FakeSite) -> None:
+    fakesite.set(booking_open=True, shows=SHOWS)
+    friday = listing_html(fakesite, date="2026-12-18").text
+    assert "/show/fri-a-19" in friday
+    assert "/show/fri-b-21" in friday
+    assert "/show/sat-a-18" not in friday
+    closed = listing_html(fakesite, date="2026-12-25")
+    assert closed.status_code == 200
+    assert "Choose a show" in closed.text  # the listing page itself, with nothing on it
+    assert "/show/" not in closed.text
+    assert listing_html(fakesite, date="18-12-2026").status_code == 404
+
+
+def test_closed_dates_can_redirect_to_the_nearest_open_date(fakesite: FakeSite) -> None:
+    fakesite.set(booking_open=True, shows=SHOWS[2:], closed_date_redirect=True)
+    response = httpx.get(fakesite.url("/movie/shows"), params={"date": "2026-12-18"})
+    assert response.status_code == 302
+    assert response.headers["location"] == "/movie/shows?date=2026-12-19"
+    assert listing_html(fakesite, date="2026-12-19").status_code == 200
+
+
+def test_a_script_rendered_listing_has_no_shows_in_its_html(fakesite: FakeSite) -> None:
+    fakesite.set(booking_open=True, shows=SHOWS, listing_render="script")
+    html = listing_html(fakesite, date="2026-12-18").text
+    assert '<a href="/show/' not in html  # only a script can put the shows on the page
+    assert "<script" in html
+    assert "</script" not in html.split("<script", 1)[1].split("</script>", 1)[0]
+
+
+def test_listing_render_is_checked(fakesite: FakeSite) -> None:
+    response = httpx.post(fakesite.url("/__control/state"), json={"listing_render": "flash"})
+    assert response.status_code == 400

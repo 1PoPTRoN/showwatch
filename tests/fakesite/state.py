@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_LAYOUT = tuple(f"{row}: {'A' * 10}_{'A' * 10}" for row in "ABCDEFGHIJKL")
 INTERSTITIALS = ("captcha", "queue", "login")
+LISTING_RENDERS = ("server", "script")  # "script": only a script puts the shows on the page
 
 # Default button and link names. `rename_locator` overrides them by step name (T7.9).
 LOCATOR_NAMES = {
@@ -109,6 +110,8 @@ class SiteState:
     steal_seats_on_click: int = 0
     hold_seconds: int = 600
     rename_locator: dict[str, str] = field(default_factory=dict)
+    listing_render: str = "server"
+    closed_date_redirect: bool = False  # a closed date's listing redirects to the first open one
     holds: dict[str, Hold] = field(default_factory=dict)
     log: list[dict[str, Any]] = field(default_factory=list)
 
@@ -125,6 +128,8 @@ class SiteState:
             "steal_seats_on_click",
             "hold_seconds",
             "rename_locator",
+            "listing_render",
+            "closed_date_redirect",
         }
         unknown = sorted(set(data) - known)
         if unknown:
@@ -158,6 +163,12 @@ class SiteState:
             if unknown_steps:
                 raise ControlError(f"unknown locator names: {', '.join(unknown_steps)}")
             self.rename_locator = renamed
+        if "listing_render" in data:
+            if data["listing_render"] not in LISTING_RENDERS:
+                raise ControlError(f"listing_render must be one of {LISTING_RENDERS}")
+            self.listing_render = str(data["listing_render"])
+        if "closed_date_redirect" in data:
+            self.closed_date_redirect = bool(data["closed_date_redirect"])
 
     # --- queries -------------------------------------------------------------------------------
 

@@ -15,7 +15,7 @@ sync: ## Create or refresh .venv from uv.lock
 check: ## Lint, format check, type check and the full test suite (must be green)
 	$(RUN) ruff check .
 	$(RUN) ruff format --check .
-	$(RUN) mypy --strict src
+	$(RUN) mypy --strict src scripts
 	$(RUN) mypy tests
 	$(RUN) pytest -q
 

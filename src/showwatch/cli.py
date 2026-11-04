@@ -4,16 +4,19 @@ Data lives in `$SHOWWATCH_HOME` (default `~/.showwatch`): the database, logs, ru
 saved browser profile and the run lock. Secrets come from the environment, or from a `.env` file in
 the current directory (only there; parent folders are never searched).
 
-Until the real-site adapter exists (Phase 10), `run`, `login` and `canary` need `--fakeshow URL`,
-which points them at FakeShow, the local test site. `parse` and the optional locator healer use
-Claude (ANTHROPIC_API_KEY, or an `ant auth login` profile).
+`run`, `login` and `canary` work on the real site through its calibration file (Phase 10;
+`--calibration`, default `calibration/bms-locators.yaml` in the current directory, made with
+`scripts/calibrate.py`). `--fakeshow URL` points them at FakeShow, the local test site, instead.
+`parse` and the optional locator healer use Claude (ANTHROPIC_API_KEY, or an `ant auth login`
+profile).
 """
 
 import asyncio
 import os
 import random
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, NoReturn
 from zoneinfo import ZoneInfo
@@ -22,20 +25,27 @@ import anthropic
 import httpx
 import typer
 from dotenv import load_dotenv
+from playwright.async_api import Page
 
 from showwatch import __version__, limits
 from showwatch.adapters.base import SiteAdapter
+from showwatch.adapters.bms import BmsAdapter
+from showwatch.adapters.calibration import DEFAULT_PATH, Calibration, load_calibration
 from showwatch.adapters.fake import FakeSiteAdapter
 from showwatch.canary import Canary
-from showwatch.clock import SystemClock
-from showwatch.config import DEFAULT_TIMEZONE, Settings, Target, load_settings
+from showwatch.clock import Clock, SystemClock
+from showwatch.config import DEFAULT_TIMEZONE, Settings, Target, load_settings, render_listing_url
 from showwatch.errors import (
     AlreadyRunning,
+    Blocked,
+    CalibrationError,
     ConfigError,
     IllegalTransition,
     LlmError,
     NotifierConfigError,
+    RateLimited,
     StoreError,
+    TransientError,
 )
 from showwatch.executor.browser import BrowserHolder
 from showwatch.llm.client import StructuredClaude, resolve_model
@@ -48,8 +58,9 @@ from showwatch.notify.factory import build_notifier
 from showwatch.notify.heartbeat import heartbeat_event
 from showwatch.notify.messages import local_clock
 from showwatch.orchestrator import Orchestrator
+from showwatch.ratelimit import PollGate
 from showwatch.state import State, Trigger
-from showwatch.store import Store
+from showwatch.store import Store, TargetRecord
 
 app = typer.Typer(
     name="showwatch",
@@ -59,8 +70,12 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 
-FAKESHOW = "URL of FakeShow, the local test site (needed until the real-site adapter, Phase 10)."
+FAKESHOW = "URL of FakeShow, the local test site, instead of the calibrated real site."
 FakeshowOption = Annotated[str | None, typer.Option("--fakeshow", help=FAKESHOW)]
+CALIBRATION = "The real site's calibration file (made with scripts/calibrate.py; see README)."
+CalibrationOption = Annotated[
+    Path, typer.Option("--calibration", envvar="SHOWWATCH_CALIBRATION", help=CALIBRATION)
+]
 
 
 # --- paths and seams (tests replace make_browser and interactive_login) --------------------------
@@ -113,13 +128,71 @@ async def _open_store() -> AsyncIterator[Store]:
         yield store
 
 
-def _site(fakeshow: str | None) -> str:
-    if fakeshow is None:
+@dataclass(frozen=True)
+class _Site:
+    """Where `run`, `login` and `canary` go: FakeShow, or the real site through its calibration."""
+
+    fakeshow: str | None = None
+    calibration: Calibration | None = None
+
+    @property
+    def login_url(self) -> str:
+        if self.calibration is not None:
+            site = self.calibration.site
+            return f"{site.base_url}{site.login_path}"
+        return f"{self.fakeshow}/login"
+
+    def adapter(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        clock: Clock,
+        gate: PollGate,
+        open_page: Callable[[], Awaitable[Page]],
+    ) -> SiteAdapter:
+        if self.calibration is not None:
+            return BmsAdapter(
+                self.calibration, client=client, clock=clock, gate=gate, open_page=open_page
+            )
+        return FakeSiteAdapter(self.fakeshow or "", client=client, clock=clock)
+
+    def check_targets(self, records: Sequence[TargetRecord]) -> None:
+        """Refuse targets the real site cannot be checked for (before any request is sent)."""
+        if self.calibration is None:
+            return
+        hosts = self.calibration.site.all_hosts
+        problems = []
+        for record in records:
+            target = record.target
+            if record.state is State.BOOKED:
+                continue  # finished: never checked again
+            if target.listing_url is None:
+                problems.append(f"{target.id}: no listing_url (the page that lists its shows)")
+                continue
+            url, _ = render_listing_url(target.listing_url, target.dates[0])
+            if (httpx.URL(url).host or "").lower() not in hosts:
+                problems.append(f"{target.id}: listing_url is not on the calibrated site")
+        if problems:
+            _fail(
+                'Some targets cannot be watched on the real site (see README, "Targets on the '
+                'real site"):\n' + "\n".join(f"  - {p}" for p in problems)
+            )
+
+
+def _site(fakeshow: str | None, calibration: Path) -> _Site:
+    if fakeshow is not None:
+        return _Site(fakeshow=fakeshow.rstrip("/"))
+    if not calibration.is_file():
         _fail(
-            "The real-site adapter arrives in Phase 10. For now, point ShowWatch at the local "
-            "test site: --fakeshow http://127.0.0.1:<port>"
+            f"No calibration file at {calibration}. Make one with: uv run python "
+            'scripts/calibrate.py record --site <address> (see README, "Using it on the real '
+            'site"), or point ShowWatch at the local test site with --fakeshow '
+            "http://127.0.0.1:<port>"
         )
-    return fakeshow.rstrip("/")
+    try:
+        return _Site(calibration=load_calibration(calibration))
+    except CalibrationError as exc:
+        _fail(str(exc))
 
 
 async def _settings(store: Store) -> Settings | None:
@@ -177,12 +250,12 @@ def _root(
 
 
 @app.command()
-def login(fakeshow: FakeshowOption = None) -> None:
+def login(fakeshow: FakeshowOption = None, calibration: CalibrationOption = DEFAULT_PATH) -> None:
     """Open a headed browser with the saved profile so you can log in yourself."""
-    site = _site(fakeshow)
+    site = _site(fakeshow, calibration)
     lock = _lock("showwatch login")
     try:
-        asyncio.run(interactive_login(home() / "profile", f"{site}/login"))
+        asyncio.run(interactive_login(home() / "profile", site.login_url))
     finally:
         lock.release()
     typer.echo("Saved. ShowWatch will reuse this login; it never sees your password.")
@@ -285,10 +358,11 @@ async def _status(target_id: str | None) -> None:
 @app.command()
 def run(
     fakeshow: FakeshowOption = None,
+    calibration: CalibrationOption = DEFAULT_PATH,
     max_polls: Annotated[int | None, typer.Option("--max-polls", hidden=True)] = None,
 ) -> None:
     """Start watching all targets (runs until stopped)."""
-    site = _site(fakeshow)
+    site = _site(fakeshow, calibration)
     lock = _lock("showwatch run")
     undo_logging = configure_logging(home() / "logs")
     try:
@@ -300,17 +374,21 @@ def run(
         lock.release()
 
 
-async def _run(site: str, max_polls: int | None) -> None:
+async def _run(site: _Site, max_polls: int | None) -> None:
     clock = SystemClock()
     async with _open_store() as store:
         settings = await _settings(store)
         records = await store.list_targets()
         if settings is None or not records:
             _fail("Nothing to watch yet. Add targets with: showwatch add targets.yaml")
+        site.check_targets(records)
         async with httpx.AsyncClient() as client:
             notifier = await _notifier(store, client)
-            adapter = FakeSiteAdapter(site, client=client, clock=clock)
             async with make_browser(home() / "profile") as browser:
+                gate = PollGate(clock)  # one gate for polls, extra date pages and bookings (C4)
+                adapter = site.adapter(
+                    client=client, clock=clock, gate=gate, open_page=browser.new_page
+                )
                 orchestrator = Orchestrator(
                     settings=settings,
                     store=store,
@@ -321,6 +399,7 @@ async def _run(site: str, max_polls: int | None) -> None:
                     open_page=browser.new_page,
                     runs_dir=home() / "runs",
                     healer=_healer(settings, adapter),
+                    gate=gate,
                 )
                 typer.echo(f"Watching {len(records)} target(s). Press Ctrl+C to stop.")
                 await orchestrator.run(max_polls=max_polls)
@@ -432,9 +511,9 @@ async def _heartbeat() -> None:
 
 
 @app.command()
-def canary(fakeshow: FakeshowOption = None) -> None:
+def canary(fakeshow: FakeshowOption = None, calibration: CalibrationOption = DEFAULT_PATH) -> None:
     """Read-only check that the booking flow still matches the saved locators."""
-    site = _site(fakeshow)
+    site = _site(fakeshow, calibration)
     lock = _lock("showwatch canary")
     try:
         passed = asyncio.run(_canary(site))
@@ -444,20 +523,28 @@ def canary(fakeshow: FakeshowOption = None) -> None:
         raise typer.Exit(code=1)
 
 
-async def _canary(site: str) -> bool:
+async def _canary(site: _Site) -> bool:
     clock = SystemClock()
     async with _open_store() as store, httpx.AsyncClient() as client:
         records = await store.list_targets()
         if not records:
             _fail("Add a target first: the canary checks one of its shows.")
-        adapter = FakeSiteAdapter(site, client=client, clock=clock)
+        site.check_targets(records[:1])
         target = records[0].target
-        snapshot = await adapter.check_availability(target)
-        shows = [s for day in sorted(snapshot.open_dates) for s in snapshot.open_dates[day]]
-        if not shows:
-            _fail("No open show to check right now; try again when booking is open.")
         notifier = await _notifier(store, client)
         async with make_browser(home() / "profile") as browser:
+            gate = PollGate(clock)
+            adapter = site.adapter(
+                client=client, clock=clock, gate=gate, open_page=browser.new_page
+            )
+            try:
+                async with gate.poll():
+                    snapshot = await adapter.check_availability(target)
+            except (RateLimited, Blocked, TransientError) as exc:
+                _fail(f"Could not read the listing for {target.id}: {exc}")
+            shows = [s for day in sorted(snapshot.open_dates) for s in snapshot.open_dates[day]]
+            if not shows:
+                _fail("No open show to check right now; try again when booking is open.")
             result = await Canary(
                 adapter=adapter,
                 notifier=notifier,

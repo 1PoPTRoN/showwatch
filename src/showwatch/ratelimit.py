@@ -4,7 +4,8 @@
 requests are ever in flight (single-flight), and it starts a request only once
 `GLOBAL_MIN_SPACING_S` has passed since the previous one started, across all targets.
 `PollGate.exclusive()` lets a booking run (Phase 7) hold the gate, so polling pauses meanwhile
-(docs/DESIGN-NOTES.md P4.6).
+(docs/DESIGN-NOTES.md P4.6). `PollGate.pace()` spaces an extra request inside one check, for a
+site that needs one page per date (Phase 10).
 
 Spacing waits use the injected Clock. Because the lock is held while waiting, only one task is ever
 asleep in the gate, which keeps FakeClock's virtual time exact.
@@ -28,13 +29,27 @@ class PollGate:
     @asynccontextmanager
     async def poll(self) -> AsyncIterator[None]:
         async with self._lock:
-            if self._last_start is not None:
-                elapsed = (self._clock.now() - self._last_start).total_seconds()
-                wait = limits.GLOBAL_MIN_SPACING_S - elapsed
-                if wait > 0:
-                    await self._clock.sleep(wait)
-            self._last_start = self._clock.now()
+            await self._space()
             yield
+
+    async def pace(self) -> None:
+        """Space one more request inside the current `poll()` (P6.4, P10.3).
+
+        For an adapter whose check needs several pages (one per date). The lock is already held,
+        so the extra request is still single-flight, and it starts no sooner than
+        GLOBAL_MIN_SPACING_S after the previous one. The next poll is spaced from it in turn.
+        """
+        if not self._lock.locked():
+            raise RuntimeError("pace() is only for an extra request inside poll()")
+        await self._space()
+
+    async def _space(self) -> None:
+        if self._last_start is not None:
+            elapsed = (self._clock.now() - self._last_start).total_seconds()
+            wait = limits.GLOBAL_MIN_SPACING_S - elapsed
+            if wait > 0:
+                await self._clock.sleep(wait)
+        self._last_start = self._clock.now()
 
     @asynccontextmanager
     async def exclusive(self) -> AsyncIterator[None]:

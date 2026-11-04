@@ -4,6 +4,8 @@ import asyncio
 import itertools
 from datetime import datetime, timedelta
 
+import pytest
+
 from showwatch.ratelimit import PollGate
 from tests.support.clock import FakeClock
 
@@ -70,3 +72,28 @@ async def test_exclusive_session_holds_off_polls(fake_clock: FakeClock) -> None:
 
     await asyncio.gather(booking(), poll())
     assert order == ["booking-start", "booking-end", "poll"]
+
+
+# --- Phase 10: an adapter that needs several requests in one check --------------------------------
+
+
+async def test_pace_spaces_an_extra_request_inside_a_poll(fake_clock: FakeClock) -> None:
+    # P6.4: one availability check may need one page per date. Each extra request goes through
+    # the gate, so C4's 20 s spacing holds for it and for the poll that comes after it.
+    gate = PollGate(fake_clock)
+    starts: list[datetime] = []
+    async with gate.poll():
+        starts.append(fake_clock.now())
+        await fake_clock.sleep(2)
+        await gate.pace()
+        starts.append(fake_clock.now())
+    async with gate.poll():
+        starts.append(fake_clock.now())
+    gaps = [(b - a).total_seconds() for a, b in itertools.pairwise(starts)]
+    assert gaps == [20, 20]
+
+
+async def test_pace_outside_a_poll_is_a_bug(fake_clock: FakeClock) -> None:
+    gate = PollGate(fake_clock)
+    with pytest.raises(RuntimeError, match="inside poll"):
+        await gate.pace()
