@@ -201,12 +201,30 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
   `start_col` (P2.2). `done`
 - **P6.3** A Chromium profile is single-process. The executor keeps one warm persistent context, and
   `login` refuses to run while `run` holds the lock (see X3). `proposed`
-- **P7.1** T7.5 "no requests after the interstitial" is asserted from the server request log. Fake
-  interstitial pages therefore load no sub-resources and run no scripts. `proposed`
+- **P7.1** T7.5 "no requests after the interstitial" is asserted from FakeShow's own request log, and
+  its interstitial pages load no sub-resources and run no scripts. After an interstitial the executor
+  only takes a local screenshot, which sends no request. `done`
 - **P7.2** If the process crashes while HELD, the browser closes, but the hold may survive on the
-  site. Recovery re-notifies the countdown; ShowWatch does not try to restore the page. `proposed`
+  site. The hold expiry is stored at SEATS_HELD, not only at SUMMARY_REACHED, so recovery can keep
+  the countdown (tested by crashing in between). ShowWatch does not try to restore the page. `done`
 - **P7.3** `cancel` stops tracking only. ShowWatch clicks nothing on the site, and the hold lapses by
-  itself. `proposed`
+  itself. `proposed` (Phase 8)
+- **P7.4 C1 is structural.** The steps are an allow-list (`Step`) with no payment step. `safe_click`
+  checks the payment page and every forbidden locator *before* clicking (proven by an empty request
+  log). An architecture test allows click-like calls only in `executor/guards.py`, and bans every
+  typing API (`fill`, `type`, ...) everywhere, so no UPI ID, card number or OTP can ever be typed.
+  The test caught a helper of mine named `check`, which I renamed instead of loosening the rule. `done`
+- **P7.5 Locators.** `LocatorSpec` = role + accessible name (or name regex), test id, or visible
+  text, with `{placeholders}`, plus a `navigates` flag. FakeShow seats use test ids
+  (`seat-{row}-{col}`); the real site's form comes from calibration in Phase 10. `done`
+- **P7.6 A lost seat race restarts from the show page**, which resets any partial selection on any
+  site at the cost of two extra page loads. The executor looks at no more than the 3 best shows. `done`
+- **P7.7 `detect_interstitial` may also return "forbidden"** (a block page mid-flow): §7 lists only
+  captcha, queue and login, but C3 covers block pages too. `done` (flagged in the Phase 7 report)
+- **P7.8** An error after selection has ended (the target is already HELD) is logged, not fired as
+  `error`, which the state machine would refuse anyway. `done`
+- **P7.9 FakeShow's session cookie is persistent** (it has an expiry). Chromium drops expiry-less
+  session cookies on exit, while real login cookies persist; T7.12 found the difference. `done`
 
 ## Phases 8–10
 

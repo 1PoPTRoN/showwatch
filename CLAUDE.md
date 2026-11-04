@@ -17,8 +17,8 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 - If anything needs to get around bot detection, a CAPTCHA, a queue or rate limits: STOP and ask.
 
 ## Hard constraints (§2, non-negotiable)
-- C1 No payment automation. Executor stops at the order summary. Every click goes through `safe_click()`, which
-  raises `PaymentBoundaryError` on the payment page or a forbidden locator. Never click "continue to payment".
+- C1 No payment automation. Executor stops at the order summary. Clicks only via `executor/guards.py`
+  (`safe_click`/`safe_select`); no typing API anywhere (test_architecture enforces both).
 - C2 No credentials. User logs in manually (`showwatch login`, headed). Never read/store/log/type passwords or OTPs.
 - C3 No evasion: no CAPTCHA solving, stealth plugins, fingerprint/UA spoofing, proxies or multiple accounts.
   CAPTCHA, queue or block page → PAUSED, leave the browser as it is, notify, take no further action on that target.

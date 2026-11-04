@@ -93,6 +93,14 @@ class Change:
 
 
 @dataclass(frozen=True)
+class HeldSeats:
+    """Seats ShowWatch is holding (or, in a dry run, would hold), as the site labels them."""
+
+    show: Show
+    seats: tuple[str, ...]  # e.g. ("H9", "H10")
+
+
+@dataclass(frozen=True)
 class Attempt:
     """One detection-to-outcome cycle of a target (SPEC §3). Open while `closed_at` is None.
 
@@ -107,6 +115,7 @@ class Attempt:
     expires_at: datetime | None = None
     closed_at: datetime | None = None
     outcome: str | None = None  # e.g. "notified", "expired", "booked"; set when closed
+    held: HeldSeats | None = None  # the seats held, once SEATS_HELD
 
     def __post_init__(self) -> None:
         _require_aware(self.opened_at, "Attempt.opened_at")

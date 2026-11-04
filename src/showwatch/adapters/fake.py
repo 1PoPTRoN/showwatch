@@ -1,7 +1,7 @@
 """Adapter for FakeShow, the local fake cinema site in tests/fakesite (SPEC §9).
 
-Phase 6 covers availability over HTTP. Phase 7 adds the browser steps (locators, interstitials,
-seat map, hold expiry).
+Availability is read over HTTP. The browser steps (locators, interstitials, seat map, hold expiry)
+are read from FakeShow's semantic HTML: roles and names, test ids, and `data-*` attributes.
 
 * One availability check is exactly one HTTP request: the listing page has every open date.
   C4 spaces requests, so an adapter must never fan out per date behind the gate's back.
@@ -10,18 +10,41 @@ seat map, hold expiry).
 * It refuses any base URL that is not http://127.0.0.1, so it can never talk to a real site.
 """
 
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from playwright.async_api import Page
 
+from showwatch.adapters.base import Interstitial, LocatorSet, LocatorSpec
 from showwatch.clock import Clock
 from showwatch.config import Target
 from showwatch.errors import Blocked, RateLimited, TransientError
-from showwatch.models import Show, Snapshot
+from showwatch.models import SeatMap, SeatStatus, Show, Snapshot
 
 LISTING_PATH = "/movie/shows"
+
+LOCATORS: LocatorSet = {
+    "choose_quantity": LocatorSpec(role="combobox", name="Number of seats"),
+    "select_seats": LocatorSpec(role="button", name="Select seats", navigates=True),
+    "seat": LocatorSpec(test_id="seat-{row}-{col}", navigates=True),
+    "proceed_to_summary": LocatorSpec(role="button", name_pattern=r"^Pay ₹\d+$", navigates=True),
+}
+FORBIDDEN: LocatorSet = {
+    "continue_to_payment": LocatorSpec(role="link", name="Continue to payment"),
+    "pay_now": LocatorSpec(role="button", name="Pay now"),
+}
+
+_READ_GRID = """grid => Array.from(grid.querySelectorAll("[data-row][data-col]")).map(c => ({
+    row: c.dataset.row,
+    col: Number(c.dataset.col),
+    gap: c.dataset.gap === "true",
+    taken: c.hasAttribute("disabled") || c.dataset.taken === "true",
+}))"""
+_COUNTDOWN = re.compile(r"PT(\d+)S")
 
 
 class _ListingParser(HTMLParser):
@@ -105,3 +128,66 @@ class FakeSiteAdapter:
         except (KeyError, ValueError) as exc:
             raise TransientError(f"could not read a show from the listing: {exc}") from None
         return show, starts.date()  # the listing's own (local) calendar date
+
+    # --- browser steps (SiteAdapter) ----------------------------------------------------------
+
+    def locators(self) -> LocatorSet:
+        return LOCATORS
+
+    def forbidden(self) -> LocatorSet:
+        return FORBIDDEN
+
+    @staticmethod
+    async def _main_attribute(page: Page, name: str) -> str | None:
+        main = page.get_by_role("main")
+        if await main.count() != 1:
+            return None
+        return await main.get_attribute(name)
+
+    async def detect_interstitial(self, page: Page) -> Interstitial | None:
+        kind = await self._main_attribute(page, "data-interstitial")
+        if kind == "captcha":
+            return "captcha"
+        if kind == "queue":
+            return "queue"
+        if kind == "login":
+            return "login"
+        if await self._main_attribute(page, "data-page") == "blocked":
+            return "forbidden"
+        return None
+
+    async def is_payment_page(self, page: Page) -> bool:
+        return (
+            urlsplit(page.url).path.startswith("/payment")
+            or await self._main_attribute(page, "data-page") == "payment"
+        )
+
+    async def read_seat_map(self, page: Page) -> SeatMap:
+        cells: list[dict[str, Any]] = await page.get_by_role("grid", name="Seat map").evaluate(
+            _READ_GRID
+        )
+        rows: dict[str, list[tuple[int, SeatStatus]]] = {}
+        for cell in cells:
+            status = (
+                SeatStatus.GAP
+                if cell["gap"]
+                else SeatStatus.TAKEN
+                if cell["taken"]
+                else SeatStatus.AVAILABLE
+            )
+            rows.setdefault(str(cell["row"]), []).append((int(cell["col"]), status))
+        return SeatMap(
+            rows=tuple(
+                (label, tuple(status for _, status in sorted(row))) for label, row in rows.items()
+            )
+        )
+
+    async def read_hold_expiry(self, page: Page) -> datetime | None:
+        timer = page.get_by_test_id("hold-timer")
+        if await timer.count() != 1:
+            return None
+        duration = await timer.evaluate("el => el.querySelector('time')?.getAttribute('datetime')")
+        match = _COUNTDOWN.fullmatch(str(duration or ""))
+        if match is None:
+            return None
+        return self._clock.now() + timedelta(seconds=int(match[1]))

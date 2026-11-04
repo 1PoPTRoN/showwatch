@@ -242,3 +242,73 @@ def test_purity_checker_catches(snippet: str) -> None:
 )
 def test_purity_checker_allows(snippet: str) -> None:
     assert find_impure_imports(snippet, "showwatch.matcher.seats") == [], snippet
+
+
+# --- C1/C2: only the guard may click; nothing may type -------------------------------------------
+
+GUARDS_MODULE = SRC / "executor" / "guards.py"
+CLICK_LIKE = frozenset(
+    {
+        "click",
+        "dblclick",
+        "tap",
+        "press",
+        "check",
+        "uncheck",
+        "set_checked",
+        "dispatch_event",
+        "select_option",
+    }
+)
+TYPING = frozenset({"fill", "type", "press_sequentially", "insert_text", "set_input_files"})
+
+
+def find_interactions(source: str) -> tuple[list[str], list[str]]:
+    """(click-like calls, typing calls) found in `source`, as "line: name"."""
+    clicks: list[str] = []
+    typing: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            name = node.func.attr
+            if name in CLICK_LIKE:
+                clicks.append(f"{node.lineno}: .{name}()")
+            if name in TYPING:
+                typing.append(f"{node.lineno}: .{name}()")
+    return clicks, typing
+
+
+def test_only_safe_click_interacts_with_pages() -> None:
+    # C1: every click goes through safe_click(), which enforces the payment boundary.
+    offenders = []
+    for path in sorted(SRC.rglob("*.py")):
+        clicks, _ = find_interactions(path.read_text())
+        if clicks and path != GUARDS_MODULE:
+            offenders += [f"{path.relative_to(SRC.parent)}:{c}" for c in clicks]
+    assert offenders == [], "click through executor.guards.safe_click instead:\n" + "\n".join(
+        offenders
+    )
+    assert GUARDS_MODULE.is_file()
+
+
+def test_nothing_ever_types_into_a_page() -> None:
+    # C1/C2: no UPI ID, card number, password or OTP is ever typed, so no typing API is used at all.
+    offenders = []
+    for path in sorted(SRC.rglob("*.py")):
+        _, typing = find_interactions(path.read_text())
+        offenders += [f"{path.relative_to(SRC.parent)}:{t}" for t in typing]
+    assert offenders == [], "ShowWatch never types into pages:\n" + "\n".join(offenders)
+
+
+@pytest.mark.parametrize(
+    ("snippet", "kind"),
+    [
+        ("await page.get_by_role('button').click()", "click"),
+        ("await loc.dispatch_event('click')", "click"),
+        ("await page.select_option('#x', '2')", "click"),
+        ("await page.get_by_label('UPI').fill('x@upi')", "type"),
+        ("await loc.press_sequentially('123456')", "type"),
+    ],
+)
+def test_interaction_checker_catches(snippet: str, kind: str) -> None:
+    clicks, typing = find_interactions(snippet)
+    assert clicks if kind == "click" else typing, snippet

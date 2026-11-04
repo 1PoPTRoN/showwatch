@@ -4,9 +4,10 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 6 of 10 done).** The config file, show and seat choice, the
-> crash-safe store, the polite polling loop, notifications, and a local fake cinema site for testing
-> are in place. Nothing talks to a real website yet, and the CLI commands are placeholders.
+> **Status: early development (Phase 7 of 10 done).** Everything up to holding seats works end to end
+> against a local fake cinema site: watching, choosing shows and seats, holding them in a real
+> browser, and notifications. Nothing talks to a real website yet, and the CLI commands are
+> placeholders.
 
 ## Why
 
@@ -115,6 +116,24 @@ Every change happens completely or not at all, and if ShowWatch is stopped mid-w
 the next start. An interrupted selection goes back to watching, an expired hold is closed, and a hold
 that is still running keeps its countdown.
 
+## How seats are held (assist mode)
+
+When booking opens, ShowWatch opens your saved browser profile, goes to the best show, chooses the
+number of seats, reads the seat map, clicks the best block of seats and proceeds to the **order
+summary**. There it stops, sends you the seats, venue, show time and countdown, and leaves the
+window open for you to pay.
+
+- **It cannot pay.** The steps it may take are a fixed list with no payment step. Every click is
+  checked first, and refused on the payment page or on buttons such as "Continue to payment".
+  A test ensures nothing else in the code can click, and nothing at all can type.
+- **If someone takes a seat first**, it reads the seat map again and tries the next best seats, up to
+  three times.
+- **A CAPTCHA, queue or block page stops everything at once.** The window is left exactly as it was
+  and you are told. If the site asks you to log in, it tells you to run `showwatch login`.
+- **Every step is screenshotted** to `~/.showwatch/runs/<attempt>/`. In `dry-run` mode it outlines the
+  seats it would pick in a screenshot and clicks nothing.
+- **Polling pauses** while seats are being chosen, so only one thing talks to the site at a time.
+
 ## Ground rules (built in, not optional)
 
 - **Payment is never automated.** ShowWatch stops at the order summary. Every click passes a guard
@@ -145,7 +164,7 @@ check passes.
 | 4 | Watcher, scheduler and rate limiting | Done |
 | 5 | Notifications (Telegram, console) | Done |
 | 6 | Local fake cinema site for testing | Done |
-| 7 | Browser executor (stops at the order summary) | Planned |
+| 7 | Browser executor (stops at the order summary) | Done |
 | 8 | Orchestrator and the full CLI | Planned |
 | 9 | Optional LLM helpers (plain-language targets, locator repair) | Planned |
 | 10 | Calibration tools for the live site (run by you) | Planned |
@@ -196,6 +215,7 @@ src/showwatch/
   notify/           message templates, Telegram and console notifiers, dedup, heartbeat
   logging.py        JSON-lines logs with secret redaction
   adapters/         site interfaces; fake.py talks to FakeShow (the real-site adapter is Phase 10)
+  executor/         the browser run: guards.py (payment boundary), browser.py (saved profile)
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py
 examples/           targets.example.yaml, the annotated starting point

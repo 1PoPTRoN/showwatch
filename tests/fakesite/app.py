@@ -74,7 +74,13 @@ class SiteMiddleware(BaseHTTPMiddleware):
             }
         )
         if SESSION_COOKIE not in request.cookies:
-            response.set_cookie(SESSION_COOKIE, now_utc().strftime("%Y%m%d%H%M%S%f"), httponly=True)
+            # A persistent cookie (with an expiry), like a real site's login session (T7.12).
+            response.set_cookie(
+                SESSION_COOKIE,
+                now_utc().strftime("%Y%m%d%H%M%S%f"),
+                max_age=30 * 24 * 3600,
+                httponly=True,
+            )
         return response
 
 
@@ -271,6 +277,11 @@ async def request_log(request: Request) -> Response:
     return JSONResponse(_state(request).log)
 
 
+async def clear_log(request: Request) -> Response:
+    _state(request).log.clear()
+    return JSONResponse({"ok": True})
+
+
 async def shutdown(request: Request) -> Response:
     # A graceful, provable stop: uvicorn exits with code 0 (it re-raises SIGTERM instead).
     stop: Callable[[], None] | None = request.app.state.shutdown
@@ -309,6 +320,7 @@ def create_app() -> Starlette:
         Route("/__control/state", set_state, methods=["POST"]),
         Route("/__control/reset", reset, methods=["POST"]),
         Route("/__control/log", request_log),
+        Route("/__control/log/clear", clear_log, methods=["POST"]),
         Route("/__control/shutdown", shutdown, methods=["POST"]),
         Route("/__control/external-ref", external_ref),
     ]

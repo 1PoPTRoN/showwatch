@@ -1,7 +1,6 @@
 """Typed exceptions (SPEC §5: errors are typed, never bare).
 
-The remaining §7 errors (LocatorNotFound, PaymentBoundaryError) are added here by the phase
-that raises them (Phase 7).
+Every §7 error is defined here.
 """
 
 from collections.abc import Sequence
@@ -77,3 +76,15 @@ class NotifierConfigError(Exception):
 
 class NotificationFailed(Exception):
     """A message could not be delivered. Its text never holds secrets or token-bearing URLs."""
+
+
+class LocatorNotFound(Exception):
+    """An element a booking step needs was not found: the site has probably changed (T7.9)."""
+
+    def __init__(self, step: str) -> None:
+        super().__init__(f"no element found for step {step!r}")
+        self.step = step
+
+
+class PaymentBoundaryError(Exception):
+    """A click on the payment page, or on a forbidden locator, was refused (C1)."""

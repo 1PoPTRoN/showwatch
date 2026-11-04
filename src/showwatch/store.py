@@ -41,7 +41,7 @@ from showwatch.errors import (
     UnknownAttempt,
     UnknownTarget,
 )
-from showwatch.models import Attempt, Change, Event, Show, Snapshot
+from showwatch.models import Attempt, Change, Event, HeldSeats, Show, Snapshot
 from showwatch.state import State, StateMachine, Trigger
 
 BUSY_TIMEOUT_S = 10.0
@@ -100,6 +100,9 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             sent_at TEXT NOT NULL
         ) STRICT""",
     ),
+    (  # 4: the show and seats an attempt holds (for messages, and re-notifying after a restart)
+        "ALTER TABLE attempts ADD COLUMN held_json TEXT",
+    ),
 )
 
 
@@ -111,6 +114,7 @@ class _SnapshotRecord(TypedDict):
 
 
 _CHANGES = TypeAdapter(tuple[Change, ...])
+_HELD = TypeAdapter(HeldSeats)
 _SNAPSHOT = TypeAdapter(_SnapshotRecord)
 
 
@@ -287,6 +291,7 @@ def _attempt(row: sqlite3.Row) -> Attempt:
         expires_at=_opt_dt(row["expires_at"]),
         closed_at=_opt_dt(row["closed_at"]),
         outcome=row["outcome"],
+        held=None if row["held_json"] is None else _HELD.validate_json(row["held_json"]),
     )
 
 
@@ -430,11 +435,13 @@ class Store:
         reason: str | None = None,
         changes: Sequence[Change] | None = None,
         expires_at: datetime | None = None,
+        held: HeldSeats | None = None,
     ) -> TransitionResult:
         """Apply `trigger` to the target atomically: state, attempt and audit row together.
 
         `changes` (at least one, all for this target) must accompany CHANGE_DETECTED, and only it.
         `expires_at`, the seat-hold expiry, may accompany SEATS_HELD or SUMMARY_REACHED.
+        `held`, the seats held, may accompany SEATS_HELD only.
         Raises IllegalTransition (and writes nothing) if the state machine forbids the trigger.
         """
         found = _check_changes(target_id, trigger, changes)
@@ -442,7 +449,9 @@ class Store:
             if trigger not in (Trigger.SEATS_HELD, Trigger.SUMMARY_REACHED):
                 raise ValueError("expires_at may only accompany seats_held or summary_reached")
             _ts(expires_at)  # rejects naive datetimes
-        return await self._run(self._fire, target_id, trigger, reason, found, expires_at)
+        if held is not None and trigger is not Trigger.SEATS_HELD:
+            raise ValueError("held seats may only accompany seats_held")
+        return await self._run(self._fire, target_id, trigger, reason, found, expires_at, held)
 
     def _fire(
         self,
@@ -452,9 +461,10 @@ class Store:
         reason: str | None,
         changes: tuple[Change, ...],
         expires_at: datetime | None,
+        held: HeldSeats | None = None,
     ) -> TransitionResult:
         with _write(conn):
-            return self._apply(conn, target_id, trigger, reason, changes, expires_at)
+            return self._apply(conn, target_id, trigger, reason, changes, expires_at, held)
 
     def _apply(
         self,
@@ -464,6 +474,7 @@ class Store:
         reason: str | None,
         changes: tuple[Change, ...],
         expires_at: datetime | None,
+        held: HeldSeats | None = None,
     ) -> TransitionResult:
         """One transition. The caller holds the write transaction."""
         row = conn.execute(
@@ -504,6 +515,13 @@ class Store:
                 raise StoreError(f"target {target_id!r} holds seats but has no open attempt")
             conn.execute(
                 "UPDATE attempts SET expires_at = ? WHERE id = ?", (_ts(expires_at), attempt_id)
+            )
+        if held is not None:
+            if attempt_id is None:
+                raise StoreError(f"target {target_id!r} holds seats but has no open attempt")
+            conn.execute(
+                "UPDATE attempts SET held_json = ? WHERE id = ?",
+                (_HELD.dump_json(held).decode(), attempt_id),
             )
         if attempt_id is not None and StateMachine.closes_attempt(new_state):
             conn.execute(

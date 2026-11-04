@@ -134,6 +134,7 @@ def seats_page(
             cells.append(
                 f'  <button type="submit" form="select" name="seat" value="{escape(cell.label)}" '
                 f'data-row="{escape(cell.row)}" data-col="{cell.col}" '
+                f'data-testid="seat-{escape(cell.row)}-{cell.col}" '
                 f'aria-label="{escape(cell.label)}" '
                 f'aria-pressed="{pressed}"'
                 + (' data-taken="true" disabled' if taken else "")

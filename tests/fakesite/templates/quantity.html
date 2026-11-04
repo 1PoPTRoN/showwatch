@@ -2,9 +2,8 @@
 <p>$show_line</p>
 <dialog open aria-label="How many seats?">
   <form method="get" action="/show/$show_id/seats">
-    <label>Number of seats
-      <select name="qty">$options</select>
-    </label>
+    <label for="qty">Number of seats</label>
+    <select id="qty" name="qty">$options</select>
     <button type="submit">$select_label</button>
   </form>
 </dialog>

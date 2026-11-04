@@ -30,6 +30,9 @@ class FakeSite:
     def reset(self) -> None:
         httpx.post(self.url("/__control/reset"), timeout=5).raise_for_status()
 
+    def reset_log(self) -> None:
+        httpx.post(self.url("/__control/log/clear"), timeout=5).raise_for_status()
+
     def log(self) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = httpx.get(self.url("/__control/log"), timeout=5).json()
         return entries
