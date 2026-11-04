@@ -59,8 +59,8 @@ def sw(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[..., Result]
 
     monkeypatch.setattr(cli, "make_browser", headless_locked_browser)
 
-    def invoke(*args: str) -> Result:
-        return runner.invoke(cli.app, list(args), env={"SHOWWATCH_HOME": str(home)})
+    def invoke(*args: str, input: str | None = None) -> Result:
+        return runner.invoke(cli.app, list(args), env={"SHOWWATCH_HOME": str(home)}, input=input)
 
     work = tmp_path / "work"  # an empty working directory: no real .env can ever be read
     work.mkdir()
@@ -184,15 +184,10 @@ def test_t8_6_one_run_at_a_time(
             assert "already running" in result.output
 
 
-def test_t8_6_run_without_targets_and_parse_before_phase_9(
-    sw: Callable[..., Result], fakesite: FakeSite
-) -> None:
+def test_t8_6_run_without_targets(sw: Callable[..., Result], fakesite: FakeSite) -> None:
     empty = sw("run", "--fakeshow", fakesite.base_url)
     assert empty.exit_code == 1
     assert "showwatch add" in empty.output
-    parse = sw("parse", "2 IMAX tickets this Friday")
-    assert parse.exit_code == 1
-    assert "Phase 9" in parse.output
 
 
 def test_t8_6_real_site_commands_say_what_is_missing(sw: Callable[..., Result], soon: date) -> None:
@@ -240,3 +235,71 @@ def test_dotenv_is_read_from_the_working_directory_only(
     finally:
         for key in ENV_KEYS:
             os.environ.pop(key, None)  # load_dotenv writes os.environ directly
+
+
+# --- Phase 9: parse --------------------------------------------------------------------------
+
+
+def _draft(day: date) -> dict[str, object]:
+    return {
+        "target_id": "parsed-1",
+        "movie": "Monsoon Nights",
+        "city": "bengaluru",
+        "language": "hindi",
+        "formats": ["IMAX 2D"],
+        "venues": [],
+        "dates": [day.isoformat()],
+        "showtime_start": "18:00",
+        "showtime_end": "22:30",
+        "seats": 2,
+        "preferred_rows": ["H", "J", "K"],
+        "avoid_rows": [],
+        "max_price_per_seat": 1000,
+    }
+
+
+@pytest.mark.parametrize(("answer", "saved"), [("y\n", True), ("n\n", False)])
+def test_t9_1_parse_shows_yaml_and_saves_only_after_confirmation(
+    answer: str,
+    saved: bool,
+    sw: Callable[..., Result],
+    soon: date,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from showwatch.llm.client import StructuredClaude
+    from tests.support.llm import FakeClaudeAPI, text_reply
+
+    api = FakeClaudeAPI(text_reply(_draft(soon)))
+    monkeypatch.setattr(
+        cli, "make_llm", lambda settings: StructuredClaude(api.client(), model="claude-opus-5-5")
+    )
+
+    result = sw(
+        "parse",
+        "2 IMAX tickets for Monsoon Nights this Friday evening in Bengaluru, rows H to K",
+        input=answer,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "id: parsed-1" in result.output
+    assert "mode: notify-only" in result.output
+    listing = sw("list").output
+    assert ("parsed-1" in listing) is saved
+
+
+def test_t9_2_parse_refuses_an_invalid_answer_and_saves_nothing(
+    sw: Callable[..., Result], soon: date, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from showwatch.llm.client import StructuredClaude
+    from tests.support.llm import FakeClaudeAPI, text_reply
+
+    api = FakeClaudeAPI(text_reply({**_draft(soon), "seats": 40}))
+    monkeypatch.setattr(
+        cli, "make_llm", lambda settings: StructuredClaude(api.client(), model="claude-opus-5-5")
+    )
+
+    result = sw("parse", "40 tickets please", input="y\n")
+
+    assert result.exit_code == 1
+    assert "seats must be between 1 and 10" in result.output
+    assert "No targets" in sw("list").output

@@ -4,9 +4,10 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 8 of 10 done).** The whole tool works end to end, from the
-> command line, against a local fake cinema site (FakeShow). It doesn't talk to BookMyShow yet: the
-> real-site adapter is Phase 10, and until then `run`, `login` and `canary` need `--fakeshow URL`.
+> **Status: early development (Phase 9 of 10 done).** The whole tool works end to end, from the
+> command line, against a local fake cinema site (FakeShow), including the optional Claude helpers.
+> It doesn't talk to BookMyShow yet: the real-site adapter is Phase 10, and until then `run`, `login`
+> and `canary` need `--fakeshow URL`.
 
 ## Why
 
@@ -45,10 +46,28 @@ showwatch run                     # watch until Ctrl+C (keep it running until yo
 | `heartbeat` | Send the status summary now |
 | `canary` | Read-only check that the booking pages still look as expected |
 | `login` | Open the browser so you can log in yourself |
+| `parse "<request>"` | Turn plain words into a target with Claude; you confirm before it is saved |
 
 Data lives in `~/.showwatch` (or `$SHOWWATCH_HOME`). Only one `run`, `login` or `canary` can run at
 a time. If ShowWatch is stopped mid-way, the next start recovers: an interrupted selection goes back
 to watching, and a hold that is still running gets its countdown re-sent.
+
+## Optional: help from Claude
+
+Both helpers need `ANTHROPIC_API_KEY` in `.env` (or an `ant auth login` profile). They never run
+during a normal booking, and never touch payment.
+
+- **`showwatch parse "2 IMAX tickets for <movie> this Friday evening in Bengaluru, rows H to K"`**
+  drafts a target, shows it as YAML, and saves it only if you say yes. The draft passes the same
+  checks as a file you wrote yourself, and always starts as `notify-only`. Only your sentence is sent.
+- **Locator healing** (`llm: { healer: true }` in the targets file, off by default). If the site
+  renames a button ShowWatch needs, it sends a screenshot and an accessibility snapshot of *that page*
+  (never the payment page) and asks which element now does the job. The answer is used only if it is
+  exactly one visible element of the right kind, is not a payment button, and mentions no
+  UPI/OTP/card/CVV. It stays provisional until the next `showwatch canary` passes. At most one try
+  per step per attempt.
+
+The model is `claude-opus-5-5` unless you set `llm.model` or `SHOWWATCH_LLM_MODEL`.
 
 ## The targets file
 
@@ -191,7 +210,7 @@ check passes.
 | 6 | Local fake cinema site for testing | Done |
 | 7 | Browser executor (stops at the order summary) | Done |
 | 8 | Orchestrator and the full CLI | Done |
-| 9 | Optional LLM helpers (plain-language targets, locator repair) | Planned |
+| 9 | Optional LLM helpers (plain-language targets, locator repair) | Done |
 | 10 | Calibration tools for the live site (run by you) | Planned |
 
 ## Development
@@ -221,7 +240,7 @@ Browser tests run against **FakeShow**, a plain, unbranded fake cinema site that
 `127.0.0.1`. The test browser aborts every request to any other host.
 
 To try the whole flow locally, start FakeShow with `make fakesite`, then pass its URL:
-`showwatch run --fakeshow http://127.0.0.1:<port>`. `parse "<plain language>"` arrives in Phase 9.
+`showwatch run --fakeshow http://127.0.0.1:<port>`.
 
 ## Project layout
 
@@ -239,6 +258,7 @@ src/showwatch/
   adapters/         site interfaces; fake.py talks to FakeShow (the real-site adapter is Phase 10)
   executor/         the browser run: guards.py (payment boundary), browser.py (saved profile)
   orchestrator.py   startup recovery, the poll loop, booking runs, hold expiry, heartbeat
+  llm/              optional Claude helpers: intent parser, locator healer, the one API client
   cli.py, canary.py, lock.py
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py

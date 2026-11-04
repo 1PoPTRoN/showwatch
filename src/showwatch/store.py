@@ -26,11 +26,12 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Concatenate, Self, TypedDict
+from typing import Concatenate, Literal, Self, TypedDict
 
 from pydantic import TypeAdapter
 
 from showwatch import limits
+from showwatch.adapters.base import LocatorSpec
 from showwatch.clock import Clock
 from showwatch.config import Settings, Target
 from showwatch.errors import (
@@ -110,6 +111,14 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
             saved_at TEXT NOT NULL
         ) STRICT""",
     ),
+    (  # 6: locators healed by Claude: provisional until a canary passes (T9.3, T9.4)
+        """CREATE TABLE locator_overrides (
+            name TEXT PRIMARY KEY,
+            spec_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('provisional', 'confirmed')),
+            updated_at TEXT NOT NULL
+        ) STRICT""",
+    ),
 )
 
 
@@ -122,6 +131,7 @@ class _SnapshotRecord(TypedDict):
 
 _CHANGES = TypeAdapter(tuple[Change, ...])
 _HELD = TypeAdapter(HeldSeats)
+_LOCATOR = TypeAdapter(LocatorSpec)
 _SNAPSHOT = TypeAdapter(_SnapshotRecord)
 
 
@@ -169,6 +179,12 @@ class AuditEntry:
     trigger: Trigger
     reason: str | None
     at: datetime
+
+
+@dataclass(frozen=True)
+class LocatorOverride:
+    spec: LocatorSpec
+    status: Literal["provisional", "confirmed"]
 
 
 @dataclass(frozen=True)
@@ -729,6 +745,52 @@ class Store:
             return [_audit(r) for r in rows]
 
         return await self._run(query)
+
+    # --- healed locators ------------------------------------------------------------------------
+
+    async def locator_overrides(self) -> dict[str, LocatorOverride]:
+        def read(conn: sqlite3.Connection) -> dict[str, LocatorOverride]:
+            return {
+                row["name"]: LocatorOverride(
+                    _LOCATOR.validate_json(row["spec_json"]), row["status"]
+                )
+                for row in conn.execute("SELECT * FROM locator_overrides ORDER BY name")
+            }
+
+        return await self._run(read)
+
+    async def save_provisional_locator(self, name: str, spec: LocatorSpec) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            with _write(conn):
+                conn.execute(
+                    "INSERT INTO locator_overrides (name, spec_json, status, updated_at) "
+                    "VALUES (?, ?, 'provisional', ?) ON CONFLICT(name) DO UPDATE SET "
+                    "spec_json = excluded.spec_json, status = 'provisional', "
+                    "updated_at = excluded.updated_at",
+                    (name, _LOCATOR.dump_json(spec).decode(), _ts(self._clock.now())),
+                )
+
+        await self._run(write)
+
+    async def confirm_locators(self, names: Sequence[str]) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            with _write(conn):
+                for name in names:
+                    conn.execute(
+                        "UPDATE locator_overrides SET status = 'confirmed', updated_at = ? "
+                        "WHERE name = ?",
+                        (_ts(self._clock.now()), name),
+                    )
+
+        await self._run(write)
+
+    async def discard_locators(self, names: Sequence[str]) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            with _write(conn):
+                for name in names:
+                    conn.execute("DELETE FROM locator_overrides WHERE name = ?", (name,))
+
+        await self._run(write)
 
     # --- notifications -------------------------------------------------------------------------
 

@@ -5,7 +5,8 @@ saved browser profile and the run lock. Secrets come from the environment, or fr
 the current directory (only there; parent folders are never searched).
 
 Until the real-site adapter exists (Phase 10), `run`, `login` and `canary` need `--fakeshow URL`,
-which points them at FakeShow, the local test site.
+which points them at FakeShow, the local test site. `parse` and the optional locator healer use
+Claude (ANTHROPIC_API_KEY, or an `ant auth login` profile).
 """
 
 import asyncio
@@ -17,23 +18,29 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 from zoneinfo import ZoneInfo
 
+import anthropic
 import httpx
 import typer
 from dotenv import load_dotenv
 
 from showwatch import __version__, limits
+from showwatch.adapters.base import SiteAdapter
 from showwatch.adapters.fake import FakeSiteAdapter
 from showwatch.canary import Canary
 from showwatch.clock import SystemClock
-from showwatch.config import DEFAULT_TIMEZONE, Settings, load_settings
+from showwatch.config import DEFAULT_TIMEZONE, Settings, Target, load_settings
 from showwatch.errors import (
     AlreadyRunning,
     ConfigError,
     IllegalTransition,
+    LlmError,
     NotifierConfigError,
     StoreError,
 )
 from showwatch.executor.browser import BrowserHolder
+from showwatch.llm.client import StructuredClaude, resolve_model
+from showwatch.llm.healer import Healer
+from showwatch.llm.intent_parser import IntentParser, target_yaml
 from showwatch.lock import InstanceLock
 from showwatch.logging import configure_logging
 from showwatch.notify.base import Notifier
@@ -61,6 +68,19 @@ FakeshowOption = Annotated[str | None, typer.Option("--fakeshow", help=FAKESHOW)
 
 def home() -> Path:
     return Path(os.environ.get("SHOWWATCH_HOME") or Path.home() / ".showwatch")
+
+
+def make_llm(
+    settings: Settings | None, *, timeout_s: float = 60.0, max_retries: int = 2
+) -> StructuredClaude:
+    """Claude for `parse` and the healer. Credentials come from the environment or `ant` profile."""
+    try:
+        client = anthropic.AsyncAnthropic()
+    except anthropic.AnthropicError:
+        _fail("Claude is not set up: put ANTHROPIC_API_KEY in .env (see .env.example).")
+    return StructuredClaude(
+        client, model=resolve_model(settings), timeout_s=timeout_s, max_retries=max_retries
+    )
 
 
 def make_browser(profile_dir: Path) -> BrowserHolder:
@@ -182,20 +202,24 @@ async def _add(path: Path) -> None:
     except ConfigError as exc:
         _fail(str(exc))
     async with _open_store() as store:
-        records = await store.list_targets()
-        existing = {r.target.id for r in records}
-        duplicates = [t.id for t in settings.targets if t.id in existing]
-        if duplicates:
-            _fail(f"a target with id {duplicates[0]!r} already exists (remove it first)")
-        unfinished = sum(r.state is not State.BOOKED for r in records)
-        if unfinished + len(settings.targets) > limits.MAX_TARGETS:
-            _fail(f"at most {limits.MAX_TARGETS} unfinished targets are allowed (C5)")
+        await _check_room(store, settings.targets)
         for target in settings.targets:
             await store.add_target(target)
         await store.save_settings(settings)
     for target in settings.targets:
         typer.echo(f"Added {target.id}: {target.movie} ({target.mode.value}).")
     typer.echo("Start watching with: showwatch run")
+
+
+async def _check_room(store: Store, targets: tuple[Target, ...]) -> None:
+    records = await store.list_targets()
+    existing = {r.target.id for r in records}
+    duplicates = [t.id for t in targets if t.id in existing]
+    if duplicates:
+        _fail(f"a target with id {duplicates[0]!r} already exists (remove it first)")
+    unfinished = sum(r.state is not State.BOOKED for r in records)
+    if unfinished + len(targets) > limits.MAX_TARGETS:
+        _fail(f"at most {limits.MAX_TARGETS} unfinished targets are allowed (C5)")
 
 
 @app.command("list")
@@ -285,16 +309,18 @@ async def _run(site: str, max_polls: int | None) -> None:
             _fail("Nothing to watch yet. Add targets with: showwatch add targets.yaml")
         async with httpx.AsyncClient() as client:
             notifier = await _notifier(store, client)
+            adapter = FakeSiteAdapter(site, client=client, clock=clock)
             async with make_browser(home() / "profile") as browser:
                 orchestrator = Orchestrator(
                     settings=settings,
                     store=store,
-                    adapter=FakeSiteAdapter(site, client=client, clock=clock),
+                    adapter=adapter,
                     notifier=notifier,
                     clock=clock,
                     rng=random.Random(),  # noqa: S311 (poll jitter, not security)
                     open_page=browser.new_page,
                     runs_dir=home() / "runs",
+                    healer=_healer(settings, adapter),
                 )
                 typer.echo(f"Watching {len(records)} target(s). Press Ctrl+C to stop.")
                 await orchestrator.run(max_polls=max_polls)
@@ -455,7 +481,44 @@ def parse(
     text: Annotated[str, typer.Argument(help='Request in plain words, e.g. "2 IMAX tickets..."')],
 ) -> None:
     """Turn a plain-language request into target YAML for you to confirm."""
-    _fail("showwatch parse: not implemented yet (arrives in Phase 9).")
+    asyncio.run(_parse(text))
+
+
+async def _parse(text: str) -> None:
+    async with _open_store() as store:
+        settings = await _settings(store)
+        parser = IntentParser(make_llm(settings), clock=SystemClock(), tz=_tz(settings))
+        try:
+            target = await parser.parse(text)
+        except ConfigError as exc:
+            _fail(f"Claude's draft does not pass validation, so nothing was saved.\n{exc}")
+        except LlmError as exc:
+            _fail(f"Could not turn that into a target: {exc}")
+        typer.echo(target_yaml(target))
+        typer.echo("It starts as notify-only; change `mode` in your targets file to hold seats.")
+        if not typer.confirm("Add this target?", default=False):
+            typer.echo("Not saved.")
+            return
+        await _check_room(store, (target,))
+        await store.add_target(target)
+        if settings is None:
+            await store.save_settings(
+                Settings.model_validate(
+                    {
+                        "version": 1,
+                        "notifier": "console",
+                        "targets": [target.model_dump(mode="json")],
+                    }
+                )
+            )
+    typer.echo(f"Added {target.id}. Start watching with: showwatch run")
+
+
+def _healer(settings: Settings, adapter: SiteAdapter) -> Healer | None:
+    if not settings.llm.healer:
+        return None
+    # Bounded: one request, no retries, so a broken step fails fast instead of waiting.
+    return Healer(make_llm(settings, timeout_s=30.0, max_retries=0), adapter=adapter)
 
 
 def main() -> None:

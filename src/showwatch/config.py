@@ -362,12 +362,22 @@ class Target(_Model):
         return self
 
 
+class LlmSettings(_Model):
+    """Optional help from Claude (Phase 9). Off the hot path, and never used for payment."""
+
+    model: Text | None = None  # SHOWWATCH_LLM_MODEL overrides; default claude-opus-5-5
+    # Off by default: healing sends a screenshot and an accessibility snapshot of the site page
+    # (never the payment page) to Anthropic's API.
+    healer: bool = False
+
+
 class Settings(_Model):
     version: StrictInt
     timezone: str = DEFAULT_TIMEZONE
     notifier: Literal["telegram", "console"] = "console"
     polling: Polling = Field(default_factory=Polling)
     heartbeat_at: OptionalLocalTime = time(9, 0)
+    llm: LlmSettings = Field(default_factory=LlmSettings)
     targets: tuple[Target, ...]
 
     @field_validator("version")

@@ -16,6 +16,9 @@ interstitials:
     exactly as it is (C3).
   * a login wall → FAILED (`needs_login`).
 A missing element raises LocatorNotFound(step): screenshot, then FAILED (`locator_not_found`).
+With a healer configured (`llm.healer: true`, off by default), a missing role-based element first
+gets one heal per step per attempt. An accepted proposal is used at once and stored as
+provisional (Phase 9).
 Screenshots go to `<runs_dir>/<attempt_id>/NN-<step>.png`.
 """
 
@@ -32,11 +35,12 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Locator, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from showwatch.adapters.base import SiteAdapter
+from showwatch.adapters.base import LocatorSpec, SiteAdapter
 from showwatch.clock import Clock
 from showwatch.config import Mode, Target
-from showwatch.errors import LocatorNotFound, PaymentBoundaryError
+from showwatch.errors import LlmError, LocatorNotFound, PaymentBoundaryError
 from showwatch.executor.guards import Step, safe_click, safe_select
+from showwatch.llm.healer import Healer
 from showwatch.matcher import best_block, rank_shows
 from showwatch.models import Attempt, Event, EventKind, HeldSeats, SeatMap, SeatStatus, Show
 from showwatch.notify.base import Notifier
@@ -97,6 +101,7 @@ class Executor:
         runs_dir: Path,
         step_timeout_ms: int = 10_000,
         on_step: StepHook | None = None,
+        healer: Healer | None = None,
     ) -> None:
         self._store = store
         self._adapter = adapter
@@ -108,6 +113,7 @@ class Executor:
         self._runs_dir = runs_dir
         self._step_timeout_ms = step_timeout_ms
         self._on_step = on_step
+        self._healer = healer
 
     async def run(self, detection: TransitionResult) -> ExecutionResult:
         """Act on a CHANGE_DETECTED transition (the watcher's `on_detected` hook)."""
@@ -132,6 +138,8 @@ class _Run:
         self.page: Page | None = None
         self.shots: list[Path] = []
         self.step: Step = Step.OPEN_SHOW
+        self.locators: dict[str, LocatorSpec] = dict(executor._adapter.locators())
+        self.healed: set[Step] = set()  # at most one heal per step per attempt (T9.6)
 
     def result(self, outcome: Outcome, **fields: object) -> ExecutionResult:
         return ExecutionResult(
@@ -144,6 +152,8 @@ class _Run:
     # --- the run --------------------------------------------------------------------------------
 
     async def execute(self) -> ExecutionResult:
+        overrides = await self.x._store.locator_overrides()
+        self.locators.update({name: o.spec for name, o in overrides.items()})
         offered = [s for change in self.attempt.changes for s in change.shows]
         shows = rank_shows(offered, self.target, tz=self.x._tz)[: Executor.MAX_SHOWS]
         if not shows:
@@ -211,12 +221,33 @@ class _Run:
             raise PaymentBoundaryError("landed on the payment page")
 
     async def find(self, page: Page, name: str, step: Step, **values: object) -> Locator:
-        locator = self.x._adapter.locators()[name].resolve(page, **values)
+        spec = self.locators[name]
+        locator = spec.resolve(page, **values)
         try:
             await locator.wait_for(state="visible")
         except PlaywrightTimeoutError:
+            pass
+        else:
+            return locator
+        healer = self.x._healer
+        if healer is None or values or step in self.healed:  # seats (parameterised) are not healed
+            raise LocatorNotFound(step.value)
+        self.healed.add(step)
+        try:
+            replacement = await healer.heal(page, step=step, name=name, spec=spec)
+        except LlmError as exc:
+            log.warning("%s: could not heal %s: %s", self.target.id, name, exc)
             raise LocatorNotFound(step.value) from None
-        return locator
+        await self.x._store.save_provisional_locator(name, replacement)
+        self.locators[name] = replacement
+        log.warning(
+            "%s: %s healed to %s %r (provisional until a canary passes)",
+            self.target.id,
+            name,
+            replacement.role,
+            replacement.name,
+        )
+        return replacement.resolve(page)
 
     async def open_show(self, page: Page, show: Show) -> None:
         await self.begin(Step.OPEN_SHOW)
@@ -230,8 +261,8 @@ class _Run:
         await safe_select(
             page, count, str(self.target.seats), self.x._adapter, step=Step.CHOOSE_QUANTITY
         )
-        spec = self.x._adapter.locators()["select_seats"]
         button = await self.find(page, "select_seats", Step.CHOOSE_QUANTITY)
+        spec = self.locators["select_seats"]  # after find(): it may have been healed
         await safe_click(
             page, button, self.x._adapter, step=Step.CHOOSE_QUANTITY, navigates=spec.navigates
         )
@@ -244,7 +275,7 @@ class _Run:
 
     async def select_block(self, page: Page, row: str, cols: range) -> bool:
         """Click each seat of the block. False if one was taken by someone else first."""
-        spec = self.x._adapter.locators()["seat"]
+        spec = self.locators["seat"]
         for col in cols:
             await self.begin(Step.SELECT_SEAT)
             seat = await self.find(page, "seat", Step.SELECT_SEAT, row=row, col=col)
@@ -262,8 +293,8 @@ class _Run:
 
     async def hold(self, page: Page, held: HeldSeats) -> ExecutionResult:
         await self.begin(Step.PROCEED_TO_SUMMARY)
-        spec = self.x._adapter.locators()["proceed_to_summary"]
         proceed = await self.find(page, "proceed_to_summary", Step.PROCEED_TO_SUMMARY)
+        spec = self.locators["proceed_to_summary"]  # after find(): it may have been healed
         await safe_click(
             page, proceed, self.x._adapter, step=Step.PROCEED_TO_SUMMARY, navigates=spec.navigates
         )

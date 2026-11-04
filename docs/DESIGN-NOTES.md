@@ -226,7 +226,7 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 - **P7.9 FakeShow's session cookie is persistent** (it has an expiry). Chromium drops expiry-less
   session cookies on exit, while real login cookies persist; T7.12 found the difference. `done`
 
-## Phases 8–10
+## Phase 8 — orchestrator and CLI
 
 - **P8.1 Which opening to act on.** The first matching opening wins. If a lower-ranked cinema opens first,
   it is held; `showwatch cancel` returns to watching, and the top cinema is caught once it opens
@@ -250,5 +250,31 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
   real SIGKILL test would need minutes of real-time polling. `done`
 - **P8.8 Until Phase 10,** `run`, `login` and `canary` need `--fakeshow URL`. Without it they say so
   and exit 1. `done`
+
+## Phase 9 — LLM helpers (optional)
+
+- **P9.1 Model and API shape.** The default model is `claude-opus-5-5`; `SHOWWATCH_LLM_MODEL`, then
+  `llm.model`, override it. Answers are constrained with structured outputs
+  (`beta.messages.parse(output_format=...)`), because a forced tool call is a 400 on this model. Server-
+  side refusal fallback is on (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`). A
+  timeout, a decline, an API error or a wrongly shaped answer all become `LlmError`, never a crash.
+  `decided` (user: "continue")
+- **P9.2 `parse` only drafts.** Claude's answer goes through the same validation as a YAML file (limits,
+  past dates in IST, time and row formats). The result is always notify-only, and nothing is saved
+  until the user confirms. `done`
+- **P9.3 The healer is off by default** (`llm.healer: false`), because it sends a screenshot and an
+  accessibility snapshot of the site page to Anthropic. It never looks at the payment page. A
+  proposal is used only if it keeps the expected role, matches exactly one *visible* element, is not
+  forbidden, and does not mention UPI/OTP/card/CVV/PIN/password. At most one heal per step per
+  attempt; the healer request has no retries and a 30 s timeout. Parameterised locators (seats) are
+  never healed. `decided` (user: "continue")
+- **P9.4 Provisional until proven.** A healed locator is used at once in that attempt and stored as
+  provisional. The next canary promotes it, or discards it if its step fails. `done`
+- **P9.5 Tests use the real SDK** with an `httpx2.MockTransport` underneath (the SDK's own HTTP
+  stack), so request building and response parsing are what production runs. No network, no key.
+  `done`
+
+## Phase 10 — live calibration
+
 - **P10.1** Calibration drafts may contain account-specific URLs, so `calibration/*.draft.yaml` is
   gitignored. `done` (Phase 0)

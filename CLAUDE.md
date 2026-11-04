@@ -8,10 +8,9 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
   to run) → phase report (§11) → commit `phase N: <summary>` on branch `showwatch-build` → fast-forward
   `main` to it (`git merge --ff-only`) → `git push origin main` (standing approval from the user) → STOP
   and wait for "continue". The repo is public: never push anything else without asking.
-- Coverage for the report (no project dependency added):
-  `uv run --locked --with coverage coverage run --branch --source=src/showwatch -m pytest`.
+- Coverage (no dependency added): `uv run --locked --with coverage coverage run --branch --source=src/showwatch -m pytest`.
 - Tests are the contract: never weaken, skip, xfail or delete one. If a test looks wrong, say so in the report.
-- Gate commit/push on `make check`'s own exit code (`make check && git ...`), never on a piped grep.
+- Gate commit/push on `make check`'s exit code, never on a piped grep. Split long mutation sweeps (10 min cap).
 - Ask first before: adding a dependency not in §4, changing a §7 interface, or changing anything in §2.
 - NEVER contact a real site (bookmyshow.com or any other) from tests or tool runs. Mocked HTTP + local fake site only.
 - If anything needs to get around bot detection, a CAPTCHA, a queue or rate limits: STOP and ask.
@@ -31,7 +30,7 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 
 ## Stack (§4)
 - Python 3.12, `uv` (env + lockfile), src layout, package `showwatch`.
-- Runtime: playwright, httpx, pydantic>=2, pyyaml, typer, python-dotenv (+ anthropic in Phase 9).
+- Runtime: playwright, httpx, pydantic>=2, pyyaml, typer, python-dotenv, anthropic (llm/ only).
 - Dev: pytest(-asyncio,-socket,-timeout), respx, hypothesis, ruff, mypy, types-PyYAML, starlette, uvicorn.
 - Storage: stdlib sqlite3 (WAL) behind `Store`, numbered migrations. Scheduling: own asyncio loop on `Clock`.
 
@@ -49,6 +48,7 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 - Logs: `showwatch.logging.configure_logging` (JSON lines, redacted when each record is created). New secret
   (token, profile path)? `register_secret()` it. Never log raw httpx exceptions (their text holds the URL).
 - The pipeline notifies only through `DedupNotifier` (at most once per event id, never raises).
+  Claude only via `llm/client.StructuredClaude` (structured output, fallbacks; no forced tool_choice).
 - Locators: `get_by_role` / `get_by_text` / `get_by_test_id` only; no deep CSS or XPath.
 - Typed exceptions (§7); no bare `except:`. Pydantic models use `extra="forbid"`; secrets are never read from YAML.
 - Tests: `tests/{unit,integration,e2e}` are auto-marked by folder. Names carry spec ids: `test_t4_7_...`.

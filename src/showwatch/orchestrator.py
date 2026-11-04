@@ -27,6 +27,7 @@ from showwatch.clock import Clock
 from showwatch.config import Mode, Settings
 from showwatch.errors import IllegalTransition
 from showwatch.executor.executor import Executor, StepHook
+from showwatch.llm.healer import Healer
 from showwatch.models import Attempt, Event, EventKind
 from showwatch.notify.base import Notifier
 from showwatch.notify.heartbeat import heartbeat_event
@@ -54,6 +55,7 @@ class Orchestrator:
         runs_dir: Path,
         step_timeout_ms: int = 10_000,
         on_step: StepHook | None = None,
+        healer: Healer | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -72,6 +74,7 @@ class Orchestrator:
             runs_dir=runs_dir,
             step_timeout_ms=step_timeout_ms,
             on_step=on_step,
+            healer=healer,
         )
         watcher = Watcher(
             store=store,

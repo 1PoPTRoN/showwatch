@@ -92,3 +92,11 @@ class PaymentBoundaryError(Exception):
 
 class AlreadyRunning(Exception):
     """Another ShowWatch process holds the lock (only one `run`, `login` or `canary` at a time)."""
+
+
+class LlmError(Exception):
+    """The language model could not help (timeout, decline, unusable answer). Never fatal."""
+
+
+class HealFailed(LlmError):
+    """The healer found no safe replacement for a missing element."""

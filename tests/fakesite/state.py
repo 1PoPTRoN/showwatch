@@ -114,9 +114,18 @@ class SiteState:
 
     def update(self, data: dict[str, Any]) -> None:
         known = {
-            "movie", "booking_open", "shows", "seat_layout", "taken", "interstitial",
-            "status_code", "latency_ms", "steal_seats_on_click", "hold_seconds", "rename_locator",
-        }  # fmt: skip
+            "movie",
+            "booking_open",
+            "shows",
+            "seat_layout",
+            "taken",
+            "interstitial",
+            "status_code",
+            "latency_ms",
+            "steal_seats_on_click",
+            "hold_seconds",
+            "rename_locator",
+        }
         unknown = sorted(set(data) - known)
         if unknown:
             raise ControlError(f"unknown control keys: {', '.join(unknown)}")
