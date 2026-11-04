@@ -181,6 +181,31 @@ def _failed(f: _Fmt, e: Event) -> list[str]:
     return lines
 
 
+def _interrupted(f: _Fmt, e: Event) -> list[str]:
+    return [
+        f"{f.movie(e)}: ShowWatch was stopped while choosing seats, so nothing is held. "
+        "It is watching again.",
+        *_changes(f, e.changes),
+    ]
+
+
+def _dates_passed(f: _Fmt, e: Event) -> list[str]:
+    return [
+        f"{f.movie(e)}: all of its dates have passed, so it is paused.",
+        f"Remove it with {f.code(f'showwatch remove {e.target_id}')}, "
+        "or add it again with new dates.",
+    ]
+
+
+def _canary_failed(f: _Fmt, e: Event) -> list[str]:
+    return [
+        f"{f.movie(e)}: the canary check failed at step {f.code(_clip(e.reason))}: "
+        "the site's pages may have changed.",
+        "Seat holding would fail too. Check the site, then run "
+        f"{f.code('showwatch canary')} again.",
+    ]
+
+
 def _heartbeat(f: _Fmt, e: Event) -> list[str]:
     lines = [f"ShowWatch is running ({f.esc(f.when(e.at))})."]
     if not e.statuses:
@@ -208,6 +233,9 @@ _TEMPLATES: dict[EventKind, Callable[[_Fmt, Event], list[str]]] = {
     EventKind.EXPIRED: _expired,
     EventKind.FAILED: _failed,
     EventKind.HEARTBEAT: _heartbeat,
+    EventKind.INTERRUPTED: _interrupted,
+    EventKind.DATES_PASSED: _dates_passed,
+    EventKind.CANARY_FAILED: _canary_failed,
 }
 
 

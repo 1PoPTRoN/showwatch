@@ -15,7 +15,10 @@
 
 `WatchLoop.run()` is a single task. It picks the WATCHING target that is due soonest, sleeps on the
 injected Clock until then, polls it and schedules the next poll (`scheduler.next_delay`). As one
-task, its polls can never overlap; the gate also guards against any other caller.
+task, its polls can never overlap; the gate also guards against any other caller. An optional
+`housekeeping` hook runs before every step and returns when it next wants to run (a hold expiry,
+the next heartbeat). The loop wakes for whichever comes first, so everything stays on one task
+and one clock.
 """
 
 import logging
@@ -42,6 +45,7 @@ log = logging.getLogger(__name__)
 FAILURES_BEFORE_ALERT = 5
 
 DetectedHook = Callable[[TransitionResult], Awaitable[None]]
+Housekeeping = Callable[[], Awaitable[datetime | None]]
 
 
 class PollOutcome(StrEnum):
@@ -232,8 +236,10 @@ class WatchLoop:
         tz: ZoneInfo,
         rng: random.Random,
         idle_s: float = 60.0,
+        housekeeping: Housekeeping | None = None,
     ) -> None:
         self._watcher = watcher
+        self._housekeeping = housekeeping
         self._store = store
         self._clock = clock
         self._polling = polling
@@ -248,7 +254,10 @@ class WatchLoop:
         """Poll until `until` (virtual time) or `max_polls` polls. Returns the number of polls."""
         polls = 0
         while max_polls is None or polls < max_polls:
+            wake = await self._housekeeping() if self._housekeeping is not None else None
             now = self._clock.now()
+            if wake is not None and wake <= now:
+                wake = None  # housekeeping handles anything already due; never spin on it
             watching = {
                 r.target.id for r in await self._store.list_targets() if r.state is State.WATCHING
             }
@@ -259,13 +268,20 @@ class WatchLoop:
             if not self._due:
                 if until is not None and now >= until:
                     break
-                remaining = None if until is None else (until - now).total_seconds()
-                await self._clock.sleep(
-                    self._idle_s if remaining is None else min(self._idle_s, remaining)
-                )
+                pause = self._idle_s
+                if wake is not None:
+                    pause = min(pause, (wake - now).total_seconds())
+                if until is not None:
+                    pause = min(pause, (until - now).total_seconds())
+                await self._clock.sleep(pause)
                 continue
             target_id = min(self._due, key=lambda t: (self._due[t], t))
             due = self._due[target_id]
+            if wake is not None and wake < due:
+                if until is not None and wake > until:
+                    break
+                await self._clock.sleep((wake - now).total_seconds())
+                continue  # housekeeping first, then the poll
             if until is not None and due > until:
                 break
             wait = (due - now).total_seconds()

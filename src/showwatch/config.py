@@ -104,7 +104,17 @@ def _format_time(value: time) -> str:
 LocalTime = Annotated[
     time, BeforeValidator(_parse_local_time), PlainSerializer(_format_time, return_type=str)
 ]
-OptionalLocalTime = Annotated[time | None, BeforeValidator(_parse_optional_local_time)]
+
+
+def _format_optional_time(value: time | None) -> str | None:
+    return None if value is None else _format_time(value)
+
+
+OptionalLocalTime = Annotated[
+    time | None,
+    BeforeValidator(_parse_optional_local_time),
+    PlainSerializer(_format_optional_time, return_type=str | None),
+]
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 

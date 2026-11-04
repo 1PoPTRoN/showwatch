@@ -32,7 +32,7 @@ from pydantic import TypeAdapter
 
 from showwatch import limits
 from showwatch.clock import Clock
-from showwatch.config import Target
+from showwatch.config import Settings, Target
 from showwatch.errors import (
     AttemptConflict,
     DuplicateTarget,
@@ -102,6 +102,13 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
     ),
     (  # 4: the show and seats an attempt holds (for messages, and re-notifying after a restart)
         "ALTER TABLE attempts ADD COLUMN held_json TEXT",
+    ),
+    (  # 5: the settings from the last `showwatch add` (polling, notifier, timezone, ...)
+        """CREATE TABLE settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            settings_json TEXT NOT NULL,
+            saved_at TEXT NOT NULL
+        ) STRICT""",
     ),
 )
 
@@ -183,6 +190,9 @@ class Recovery:
     interrupted: tuple[Attempt, ...] = ()
     # Seats still held with time left. Notify the countdown again.
     holds_still_running: tuple[Attempt, ...] = ()
+
+
+_BUSY = frozenset({State.DETECTED, State.SELECTING, State.HELD, State.AWAITING_PAYMENT})
 
 
 def _random_attempt_id(target_id: str) -> str:
@@ -399,6 +409,51 @@ class Store:
                 (target.id, target.model_dump_json(), State.IDLE.value, _ts(now), _ts(now)),
             )
         return TargetRecord(target, State.IDLE, now, now)
+
+    async def remove_target(self, target_id: str) -> None:
+        """Delete a target and its history. Refused in the middle of an attempt."""
+
+        def delete(conn: sqlite3.Connection) -> None:
+            with _write(conn):
+                row = conn.execute(
+                    "SELECT state FROM targets WHERE id = ?", (target_id,)
+                ).fetchone()
+                if row is None:
+                    raise UnknownTarget(f"no target with id {target_id!r}")
+                state = State(row["state"])
+                if state in _BUSY:
+                    raise StoreError(
+                        f"{target_id!r} is in the middle of an attempt ({state.value}); "
+                        "cancel or finish it first"
+                    )
+                for statement in (
+                    "DELETE FROM audit WHERE target_id = ?",
+                    "DELETE FROM attempts WHERE target_id = ?",
+                    "DELETE FROM watch WHERE target_id = ?",
+                    "DELETE FROM targets WHERE id = ?",
+                ):
+                    conn.execute(statement, (target_id,))
+
+        await self._run(delete)
+
+    async def save_settings(self, settings: Settings) -> None:
+        def write(conn: sqlite3.Connection) -> None:
+            with _write(conn):
+                conn.execute(
+                    "INSERT INTO settings (id, settings_json, saved_at) VALUES (1, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET settings_json = excluded.settings_json, "
+                    "saved_at = excluded.saved_at",
+                    (settings.model_dump_json(), _ts(self._clock.now())),
+                )
+
+        await self._run(write)
+
+    async def load_settings(self) -> Settings | None:
+        def read(conn: sqlite3.Connection) -> Settings | None:
+            row = conn.execute("SELECT settings_json FROM settings WHERE id = 1").fetchone()
+            return None if row is None else Settings.model_validate_json(row[0])
+
+        return await self._run(read)
 
     async def get_target(self, target_id: str) -> TargetRecord:
         return await self._run(self._get_target, target_id)

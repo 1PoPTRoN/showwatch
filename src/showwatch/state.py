@@ -5,8 +5,8 @@ inside a database transaction.
 
 Beyond the §3 table, the machine has:
   * approved additions: `recover` (DETECTED or SELECTING → WATCHING, used on startup),
-    `hold_expired` from HELD, and `user_pause` for the `showwatch pause` command
-    (docs/DESIGN-NOTES.md P3.2, P3.5);
+    `hold_expired` from HELD, `user_pause` for the `showwatch pause` command, and `dates_passed`
+    (a target whose dates have all gone by stops itself; docs/DESIGN-NOTES.md P3.2, P3.5, P8.2);
   * mode guards: a notify-only target can never start seat selection, and a dry-run target can
     never hold seats. These are enforced here, not left to the caller's discipline.
 """
@@ -56,6 +56,7 @@ class Trigger(StrEnum):
     USER_RESUME = "user_resume"
     RECOVER = "recover"
     USER_PAUSE = "user_pause"
+    DATES_PASSED = "dates_passed"
 
 
 _S, _T = State, Trigger
@@ -88,6 +89,8 @@ TRANSITIONS: Mapping[tuple[State, Trigger], State] = MappingProxyType(
         (_S.HELD, _T.HOLD_EXPIRED): _S.EXPIRED,
         (_S.IDLE, _T.USER_PAUSE): _S.PAUSED,
         (_S.WATCHING, _T.USER_PAUSE): _S.PAUSED,
+        (_S.IDLE, _T.DATES_PASSED): _S.PAUSED,
+        (_S.WATCHING, _T.DATES_PASSED): _S.PAUSED,
     }
 )
 

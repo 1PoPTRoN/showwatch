@@ -36,13 +36,15 @@ SPEC_TABLE = {
     (State.PAUSED, Trigger.USER_RESUME): State.WATCHING,
     (State.FAILED, Trigger.USER_RESUME): State.WATCHING,
 }
-# Approved additions (docs/DESIGN-NOTES.md P3.2, P3.5).
+# Approved additions (docs/DESIGN-NOTES.md P3.2, P3.5, P8.2).
 ADDED = {
     (State.DETECTED, Trigger.RECOVER): State.WATCHING,
     (State.SELECTING, Trigger.RECOVER): State.WATCHING,
     (State.HELD, Trigger.HOLD_EXPIRED): State.EXPIRED,
     (State.IDLE, Trigger.USER_PAUSE): State.PAUSED,
     (State.WATCHING, Trigger.USER_PAUSE): State.PAUSED,
+    (State.IDLE, Trigger.DATES_PASSED): State.PAUSED,
+    (State.WATCHING, Trigger.DATES_PASSED): State.PAUSED,
 }
 
 

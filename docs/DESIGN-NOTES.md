@@ -18,9 +18,9 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
   If real concurrency is needed later, FakeClock becomes a wake-the-earliest-sleeper scheduler. `done`
   (Phase 4: one WatchLoop task; the gate's lock is held while it sleeps, so only one task ever sleeps.)
 - **X3. Two processes.** `run` plus `canary`, or `run` plus `login`, would break C4 (each process has its own
-  limiter) and fight over Chromium's profile lock. → A single-instance lock file for any command that
-  touches the site or the profile. The last request time is persisted in `Store`, so the 20 s gate holds
-  across processes. `proposed`
+  limiter) and fight over Chromium's profile lock. → `run`, `login` and `canary` take one `flock`
+  (`$SHOWWATCH_HOME/run.lock`), so only one of them runs at a time. `decided` (user: "continue"; Phase 8)
+  Persisting the last request time (P4.14) is unnecessary while only one process can poll.
 - **X4. Tooling gaps.** §9/§11 ask for coverage numbers, but no coverage tool is in §4. Hanging async
   or e2e tests are best caught by a per-test timeout. → `pytest-timeout` added (60 s per test).
   `decided` (user: "continue", Phase 6)
@@ -115,8 +115,8 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
   real SQLite trigger) and checks that the earlier writes were rolled back. This found that no earlier
   test proved it. Tables are STRICT, which caught a bytes-into-TEXT bug on the first run. `done`
 - **P3.9** At most 3 *unfinished* (non-BOOKED) targets, enforced in `Store.add_target` (closes P1.10).
-  §6 has no `remove` command, so a target that is never booked would occupy a slot for good.
-  → Phase 8 needs a way to retire targets (for example `showwatch remove <id>`). **[ask]** (by Phase 8)
+  → `showwatch remove <id>` (not in §6) deletes a target and its history, refused in the middle of an
+  attempt. `decided` (user: "continue"; Phase 8)
 
 ## Phase 4 — watcher, scheduler, rate limiting
 
@@ -174,9 +174,9 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 - **P5.5 Retries:** Telegram 5xx and network errors get the first try plus 3 retries (1, 2, 4 s on
   the injected clock). A 429 waits `retry_after` (capped at 60 s). Any other 4xx fails at once. `done`
 - **P5.6 Hold messages never overstate the time:** minutes left are rounded down. `done`
-- **P3.4** (from Phase 3) The countdown re-sent after a restart needs its own event id (for example
-  `<attempt>:held:recovered:<boot time>`), or dedup will swallow it. → The orchestrator builds that id
-  in Phase 8. `proposed`
+- **P3.4** (from Phase 3) The countdown re-sent after a restart gets its own event id
+  (`<attempt>:held:recovered:<boot time>`), so dedup lets it through. An opening whose alert may never
+  have gone out is re-sent under its *original* id, so dedup drops it if it was delivered. `done` (Phase 8)
 
 ## Phases 6–7 — fake site and executor
 
@@ -207,8 +207,8 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 - **P7.2** If the process crashes while HELD, the browser closes, but the hold may survive on the
   site. The hold expiry is stored at SEATS_HELD, not only at SUMMARY_REACHED, so recovery can keep
   the countdown (tested by crashing in between). ShowWatch does not try to restore the page. `done`
-- **P7.3** `cancel` stops tracking only. ShowWatch clicks nothing on the site, and the hold lapses by
-  itself. `proposed` (Phase 8)
+- **P7.3** `cancel` stops tracking only (RELEASED → rewatch). ShowWatch clicks nothing on the site, and
+  the hold lapses by itself. `done` (Phase 8)
 - **P7.4 C1 is structural.** The steps are an allow-list (`Step`) with no payment step. `safe_click`
   checks the payment page and every forbidden locator *before* clicking (proven by an empty request
   log). An architecture test allows click-like calls only in `executor/guards.py`, and bans every
@@ -228,9 +228,27 @@ Status key: `proposed` · `decided` (confirmed by the user) · `done` (implement
 
 ## Phases 8–10
 
-- **P8.1 Which opening to act on.** Venues open at different times. With "first eligible opening wins", a
-  lower-ranked venue can be held before the user's top venue opens (one active attempt per target).
-  The alternative is to auto-hold only the top venue and just notify for the others. **[ask]** (by Phase 8)
-- **P8.2** When every date of a target is in the past, stop it automatically and notify. `proposed`
+- **P8.1 Which opening to act on.** The first matching opening wins. If a lower-ranked cinema opens first,
+  it is held; `showwatch cancel` returns to watching, and the top cinema is caught once it opens
+  (P4.12). `decided` (user: "continue")
+- **P8.2** When every date of a target has passed, it stops itself (new system trigger `dates_passed`,
+  IDLE|WATCHING → PAUSED) and the user is told once. `done`
+- **P8.3 Housekeeping shares the poll loop's clock.** Unpaid holds expire at the exact second (the
+  loop wakes for the deadline even while other targets keep polling). Leftover EXPIRED or RELEASED
+  targets are re-watched, and the daily heartbeat fires once per local day. All of it runs on one
+  task, so FakeClock stays exact. `done`
+- **P8.4 Settings are stored at `add`.** §6's `run` takes no file, so `add` saves the file's
+  non-target settings (polling, notifier, timezone, heartbeat) for `run` to use. A round-trip test
+  found that `heartbeat_at` was saved as "09:00:00" and then rejected on load; fixed. `done`
+- **P8.5 `.env` is read from the working directory only.** python-dotenv's default search walks up
+  from the *code's* location, which could pick up a stray `.env`. Tested both ways. `done`
+- **P8.6 Stopping `run` closes the browser,** so a hold that is still open (awaiting payment) loses its
+  window. The site may still hold the seats, and recovery re-sends the countdown on the next start.
+  → README tells users to keep `run` going until they have paid. `done`
+- **P8.7 T8.4's "kill"** cancels the orchestrator in-process at a chosen step (CancelledError
+  propagates like a kill: no error is fired), and then a new orchestrator reopens the database. A
+  real SIGKILL test would need minutes of real-time polling. `done`
+- **P8.8 Until Phase 10,** `run`, `login` and `canary` need `--fakeshow URL`. Without it they say so
+  and exit 1. `done`
 - **P10.1** Calibration drafts may contain account-specific URLs, so `calibration/*.draft.yaml` is
   gitignored. `done` (Phase 0)

@@ -4,10 +4,9 @@ A personal assistant for booking movie tickets on BookMyShow. It waits for booki
 a movie you choose, picks the best show and seats according to your rules, and holds those seats
 in your own logged-in browser. **You always make the payment yourself.**
 
-> **Status: early development (Phase 7 of 10 done).** Everything up to holding seats works end to end
-> against a local fake cinema site: watching, choosing shows and seats, holding them in a real
-> browser, and notifications. Nothing talks to a real website yet, and the CLI commands are
-> placeholders.
+> **Status: early development (Phase 8 of 10 done).** The whole tool works end to end, from the
+> command line, against a local fake cinema site (FakeShow). It doesn't talk to BookMyShow yet: the
+> real-site adapter is Phase 10, and until then `run`, `login` and `canary` need `--fakeshow URL`.
 
 ## Why
 
@@ -24,6 +23,32 @@ Each watched movie (a *target*) runs in one of three modes. They are also the or
 | `notify-only` (default) | You get an alert. No browser automation at all. |
 | `dry-run` | It opens the seat map, works out the best seats and saves a screenshot with them highlighted. It clicks nothing. |
 | `assist` | It selects the seats and stops at the order summary, where they are held, then alerts you with the countdown. You pay yourself. |
+
+## Using it
+
+```sh
+cp examples/targets.example.yaml targets.yaml   # edit it: movie, dates, cinemas, seats, ...
+showwatch add targets.yaml        # validates the file, then saves its targets and settings
+showwatch login                   # once: log in yourself in the browser window that opens
+showwatch run                     # watch until Ctrl+C (keep it running until you have paid)
+```
+
+| Command | What it does |
+|---|---|
+| `add <yaml>` | Validate a targets file and add its targets (at most 3 unfinished) |
+| `list`, `status [id]` | Targets, their state, when they were last checked, any held seats |
+| `run` | Watch, alert, and (in `assist` mode) hold seats |
+| `pause <id>`, `resume <id>` | Stop or restart watching one target |
+| `done <attempt>` | You paid: mark it booked (it stops being watched) |
+| `cancel <attempt>` | Stop tracking a hold (nothing is clicked; the hold lapses) and watch again |
+| `remove <id>` | Delete a target and its history |
+| `heartbeat` | Send the status summary now |
+| `canary` | Read-only check that the booking pages still look as expected |
+| `login` | Open the browser so you can log in yourself |
+
+Data lives in `~/.showwatch` (or `$SHOWWATCH_HOME`). Only one `run`, `login` or `canary` can run at
+a time. If ShowWatch is stopped mid-way, the next start recovers: an interrupted selection goes back
+to watching, and a hold that is still running gets its countdown re-sent.
 
 ## The targets file
 
@@ -165,7 +190,7 @@ check passes.
 | 5 | Notifications (Telegram, console) | Done |
 | 6 | Local fake cinema site for testing | Done |
 | 7 | Browser executor (stops at the order summary) | Done |
-| 8 | Orchestrator and the full CLI | Planned |
+| 8 | Orchestrator and the full CLI | Done |
 | 9 | Optional LLM helpers (plain-language targets, locator repair) | Planned |
 | 10 | Calibration tools for the live site (run by you) | Planned |
 
@@ -195,11 +220,8 @@ uv run showwatch --help
 Browser tests run against **FakeShow**, a plain, unbranded fake cinema site that runs locally on
 `127.0.0.1`. The test browser aborts every request to any other host.
 
-### CLI
-
-`login`, `add <yaml>`, `list`, `status [id]`, `run`, `pause <id>`, `resume <id>`, `done <attempt_id>`,
-`cancel <attempt_id>`, `heartbeat`, `canary`, and `parse "<plain language>"`. For now they are all
-placeholders: each one prints the phase that implements it and exits.
+To try the whole flow locally, start FakeShow with `make fakesite`, then pass its URL:
+`showwatch run --fakeshow http://127.0.0.1:<port>`. `parse "<plain language>"` arrives in Phase 9.
 
 ## Project layout
 
@@ -216,6 +238,8 @@ src/showwatch/
   logging.py        JSON-lines logs with secret redaction
   adapters/         site interfaces; fake.py talks to FakeShow (the real-site adapter is Phase 10)
   executor/         the browser run: guards.py (payment boundary), browser.py (saved profile)
+  orchestrator.py   startup recovery, the poll loop, booking runs, hold expiry, heartbeat
+  cli.py, canary.py, lock.py
   limits.py         the fixed safety limits (seats, targets, polling floor)
   clock.py, cli.py, errors.py
 examples/           targets.example.yaml, the annotated starting point

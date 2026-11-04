@@ -611,3 +611,47 @@ async def test_invariants_hold_under_random_triggers(store: Store, fake_clock: F
         for earlier, later in itertools.pairwise(audit):
             assert later.from_state is earlier.to_state  # an unbroken chain
         assert (audit[-1].to_state if audit else State.IDLE) is record.state
+
+
+# --- Phase 8: settings and removing targets ----------------------------------------------------
+
+
+async def test_settings_round_trip(store: Store, fake_clock: FakeClock) -> None:
+    from showwatch.config import Settings
+
+    assert await store.load_settings() is None
+    settings = Settings.model_validate(
+        {"version": 1, "notifier": "console", "targets": [make_target().model_dump(mode="json")]}
+    )
+    await store.save_settings(settings)
+    assert await store.load_settings() == settings
+
+
+async def test_removing_a_target_deletes_it_and_frees_its_slot(
+    store: Store, fake_clock: FakeClock
+) -> None:
+    for i in range(3):
+        await new_target(store, fake_clock, State.WATCHING, Mode.NOTIFY_ONLY, target_id=f"t{i}")
+    await step(store, "t0", Trigger.CHANGE_DETECTED, fake_clock)
+    await step(store, "t0", Trigger.NOTIFIED, fake_clock)  # some history to delete
+
+    await store.remove_target("t0")
+
+    assert [r.target.id for r in await store.list_targets()] == ["t1", "t2"]
+    assert await store.audit("t0") == []
+    assert await store.attempts("t0") == []
+    await store.add_target(make_target(id="t3"))  # the slot is free again
+    with pytest.raises(UnknownTarget):
+        await store.remove_target("t0")
+
+
+@pytest.mark.parametrize(
+    "state", [State.DETECTED, State.SELECTING, State.HELD, State.AWAITING_PAYMENT]
+)
+async def test_a_target_in_the_middle_of_an_attempt_cannot_be_removed(
+    state: State, store: Store, fake_clock: FakeClock
+) -> None:
+    await new_target(store, fake_clock, state)
+    with pytest.raises(StoreError, match="in the middle"):
+        await store.remove_target("t1")
+    assert (await store.get_target("t1")).state is state

@@ -57,4 +57,4 @@ Personal BookMyShow watcher: detects openings, ranks shows/seats, holds seats, h
 ## Commands (§6)
 - `make check`: ruff check, ruff format --check, mypy --strict src, mypy tests, pytest -q (all markers). Must be green.
 - `make test`, `make e2e`, `make fakesite` (FakeShow on 127.0.0.1), `make fmt`. Browser: `playwright install chromium`.
-- CLI: `uv run showwatch --help` (login, add, list, status, run, pause, resume, done, cancel, heartbeat, canary, parse).
+- CLI: `uv run showwatch --help` (§6 commands + `remove`). Data: `$SHOWWATCH_HOME` (default `~/.showwatch`).

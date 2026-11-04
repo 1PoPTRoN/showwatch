@@ -88,3 +88,7 @@ class LocatorNotFound(Exception):
 
 class PaymentBoundaryError(Exception):
     """A click on the payment page, or on a forbidden locator, was refused (C1)."""
+
+
+class AlreadyRunning(Exception):
+    """Another ShowWatch process holds the lock (only one `run`, `login` or `canary` at a time)."""

@@ -136,6 +136,9 @@ class EventKind(StrEnum):
     EXPIRED = "expired"  # the hold ran out
     FAILED = "failed"  # the attempt failed (seat race lost, logged out, page changed)
     HEARTBEAT = "heartbeat"  # the daily "still watching" summary
+    INTERRUPTED = "interrupted"  # ShowWatch was stopped mid-selection; nothing is held
+    DATES_PASSED = "dates_passed"  # every date of the target has gone by; it is paused
+    CANARY_FAILED = "canary_failed"  # the read-only flow check failed: the site may have changed
 
 
 @dataclass(frozen=True)
